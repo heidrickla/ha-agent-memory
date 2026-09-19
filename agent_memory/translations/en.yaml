@@ -1,0 +1,28 @@
+configuration:
+  clients:
+    name: Clients
+    description: Who may call. A client with token_sha256 authenticates by bearer token; one with ip only, by source address. Scopes are read, write, delete, export, admin.
+  github_owner:
+    name: GitHub owner
+    description: Remotes under this GitHub owner become github/<owner>/<repo> namespaces.
+  forge_owner:
+    name: Forge owner
+    description: Remotes under this owner on the forge hosts become gitea/<owner>/<repo> namespaces.
+  forge_hosts:
+    name: Forge hosts
+    description: Host names and addresses of the personal forge.
+  project_links:
+    name: Project links
+    description: Repository namespaces that share a projects/<name> scope.
+  context_budget_tokens:
+    name: Context budget
+    description: Default size of a project context packet, in approximate tokens.
+  hard_context_limit_tokens:
+    name: Hard context limit
+    description: No packet exceeds this.
+  retention_deleted_days:
+    name: Retention of forgotten records
+    description: Soft-deleted records are purged after this many days.
+  ollama_url:
+    name: Ollama URL
+    description: Optional. With it set, session_close queues enrichment jobs for the later worker.

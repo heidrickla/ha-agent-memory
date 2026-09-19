@@ -1,0 +1,71 @@
+name: Agent Memory
+version: "0.1.0"
+slug: agent_memory
+description: Shared, bounded context for Claude Code and Codex over MCP; SQLite and FTS5, no paid model in the path
+url: https://github.com/heidrickla/ha-agent-memory
+arch:
+  - amd64
+  - aarch64
+startup: services
+boot: auto
+init: false
+stage: stable
+advanced: false
+ports:
+  8765/tcp: 8765
+ports_description:
+  8765/tcp: MCP and REST for agents on the LAN
+ingress: true
+ingress_port: 8765
+panel_icon: mdi:brain
+panel_title: Memory
+watchdog: http://[HOST]:[PORT:8765]/healthz
+options:
+  clients:
+    - name: desktop
+      ip: 192.0.2.2
+      scopes:
+        - read
+        - write
+        - delete
+        - export
+  github_owner: heidrickla
+  forge_owner: example
+  forge_hosts:
+    - forge.example
+    - 192.0.2.20
+  project_links:
+    - project: homelab
+      namespaces:
+        - gitea/example/ha-management
+        - gitea/example/voice-app
+        - gitea/example/ha-loops
+        - gitea/example/ha-agent-memory
+        - gitea/example/tools-server
+    - project: research
+      namespaces:
+        - gitea/example/ai-research
+        - gitea/example/ha-agent-harness-performance-tracker
+  context_budget_tokens: 4000
+  hard_context_limit_tokens: 8000
+  retention_deleted_days: 30
+  ollama_url: ""
+schema:
+  clients:
+    - name: str
+      ip: str?
+      token_sha256: str?
+      scopes:
+        - list(read|write|delete|export|admin)
+  github_owner: str
+  forge_owner: str
+  forge_hosts:
+    - str
+  project_links:
+    - project: str
+      namespaces:
+        - str
+  context_budget_tokens: int(500,8000)
+  hard_context_limit_tokens: int(1000,16000)
+  retention_deleted_days: int(1,365)
+  ollama_url: url?
