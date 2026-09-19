@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.2.2
+
+- Bootstrap lists a record once even when it is both a constraint and recent.
+
 ## 0.2.1
 
 - Ollama availability is probed every poll, so health reads right before the first job.

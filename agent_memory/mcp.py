@@ -67,7 +67,12 @@ class Memory:
         open_work = self.store.by_namespace(scopes, ("open-question", "next-step"), limit=8)
         recent = self.store.timeline(namespace, limit=5)
         index = self.store.namespaces()
-        items = [self._snippet(r, 120) for r in constraints] + [self._snippet(r, 120) for r in open_work] + [self._snippet(r, 80) for r in recent]
+        items, seen = [], set()
+        for rows, chars in ((constraints, 120), (open_work, 120), (recent, 80)):
+            for r in rows:
+                if r["id"] not in seen:
+                    seen.add(r["id"])
+                    items.append(self._snippet(r, chars))
         packed, truncated, used = self._pack(items, BUDGETS["bootstrap"], ("id", "type", "title", "snippet", "confidence"))
         return {
             "namespace": namespace,
