@@ -147,11 +147,9 @@ class Worker:
         """One poll: False when there was nothing to do or Ollama is away."""
         if self.ollama is None:
             return False
+        self.last_available = self.ollama.available()  # every poll, so health is current with an empty queue too
         job = self.store.next_job()
-        if job is None:
-            return False
-        self.last_available = self.ollama.available()
-        if not self.last_available:
+        if job is None or not self.last_available:
             return False
         try:
             n = self.run_job(job)
