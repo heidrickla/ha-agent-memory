@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.2.0
+
+- Enrichment worker: extract jobs go to the configured Ollama model with redacted notes; well-formed items become candidate records tagged with the job id, so a retry stores nothing twice. Offline Ollama leaves jobs queued and health degraded.
+
 ## 0.1.0
 
 - SQLite and FTS5 storage, namespaces from git remotes, scoped retrieval, token budgets.

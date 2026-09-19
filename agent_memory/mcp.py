@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import json
 
-from filters import screen
+from filters import redact, screen
 from namespaces import normalize_remote, scopes_for, valid_namespace
 from store import TYPES, Store, tokens
 
@@ -153,7 +153,8 @@ class Memory:
 
     def session_close(self, namespace: str, summary: str, agent: str, session: str, notes: str, client: str, enrich: bool) -> dict:
         self.scopes(namespace)
-        reason = screen(summary) or screen(notes or "")
+        reason = screen(summary)  # the summary is stored as written; the notes are redacted before they are queued
+        notes = redact(notes or "")
         if reason:
             self.store.audit(client, "rejected", namespace, "", reason)
             raise ToolError(f"not stored: {reason}")

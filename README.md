@@ -4,9 +4,10 @@ Home Assistant add-on: one shared, bounded memory for Claude Code, Codex and oth
 so a session starts from what earlier sessions learned instead of re-reading the repository.
 Canonical storage and retrieval never depend on a paid model or on Ollama.
 
-From the plan `Shared Agent Memory on Home Assistant` (2026-09-19): phases 1 to 3 (storage,
-namespaces, FTS5 retrieval, progressive MCP tools, HA packaging) are built here; Ollama
-enrichment is a later phase and only its job queue exists.
+From the plan `Shared Agent Memory on Home Assistant` (2026-09-19): phases 1 to 4 are built here:
+storage, namespaces, FTS5 retrieval, progressive MCP tools, HA packaging, and enrichment through
+Ollama on desktop (`enrich.py`: redacted notes in, validated candidates out, candidates never
+active until promoted, a job done only after its records are written).
 
 | Piece | Choice |
 |---|---|

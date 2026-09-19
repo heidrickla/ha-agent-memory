@@ -23,6 +23,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlsplit
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import enrich
 import mcp
 import page
 from store import Store
@@ -65,6 +66,7 @@ class App:
         self.memory = mcp.Memory(self.store, options)
         self.auth = Auth(options.get("clients") or [])
         self.export_dir = os.path.join(data_dir, "exports")
+        self.worker = enrich.Worker(self.store, options)
         self.started = time.time()
         self.requests = 0
         self.denied = 0
@@ -72,8 +74,9 @@ class App:
     def health(self) -> dict:
         stats = self.store.stats()
         queue = self.store.queue_depth()
+        enrichment = self.worker.state()
         return {
-            "status": "degraded" if queue["queued"] else "ok",
+            "status": "degraded" if (queue["queued"] and enrichment["ollama"] != "available") else "ok",
             "uptime_s": int(time.time() - self.started),
             "records": stats["memories"],
             "candidates": stats["candidates"],
@@ -81,7 +84,7 @@ class App:
             "fts5": stats["fts5"],
             "db_bytes": stats["db_bytes"],
             "jobs": stats["jobs"],
-            "enrichment": "queue only; the Ollama worker is a later phase",
+            "enrichment": enrichment,
             "requests": self.requests,
             "denied": self.denied,
             "clients": [c.get("name") for c in self.auth.clients],
@@ -241,6 +244,7 @@ def main(argv: list[str] | None = None) -> int:
     serve(app, args.port)
     stop = threading.Event()
     threading.Thread(target=housekeeping, args=(app, stop), name="housekeeping", daemon=True).start()
+    threading.Thread(target=app.worker.loop, args=(stop,), name="enrichment", daemon=True).start()
     LOG.info("serving on :%d, fts5 %s, %d clients, %d records", args.port, app.store.fts, len(app.auth.clients), app.store.stats()["memories"])
     try:
         while True:

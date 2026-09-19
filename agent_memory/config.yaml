@@ -1,5 +1,5 @@
 name: Agent Memory
-version: "0.1.1"
+version: "0.2.0"
 slug: agent_memory
 description: Shared, bounded context for Claude Code and Codex over MCP; SQLite and FTS5, no paid model in the path
 url: https://github.com/heidrickla/ha-agent-memory
@@ -49,6 +49,8 @@ options:
   context_budget_tokens: 4000
   hard_context_limit_tokens: 8000
   retention_deleted_days: 30
+  ollama_model: qwen3.5:9b
+  ollama_timeout_s: 120
 schema:
   clients:
     - name: str
@@ -68,3 +70,5 @@ schema:
   hard_context_limit_tokens: int(1000,16000)
   retention_deleted_days: int(1,365)
   ollama_url: url?
+  ollama_model: str?
+  ollama_timeout_s: int(10,900)?
