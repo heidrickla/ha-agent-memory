@@ -151,6 +151,24 @@ class Memory:
             raise ToolError(f"no record {rid}")
         return {"updated": {k: rec[k] for k in ("id", "type", "title", "status", "updated_at")}}
 
+    def corroborate(self, rid: str, quote: str, stance: str, client: str, agent: str, source_session: str) -> dict:
+        # The quote is a verbatim observation and goes through the same secret screen as a store:
+        # "here is the line that proves it" is exactly how a credential reaches a record.
+        reason = screen(quote)
+        if reason:
+            self.store.audit(client, "rejected", "", rid, reason)
+            raise ToolError(f"not recorded: {reason}")
+        if stance not in ("corroborates", "contradicts"):
+            raise ToolError("stance must be corroborates or contradicts")
+        rec = self.store.corroborate(rid, quote, stance, client, agent, source_session)
+        if rec is None:
+            raise ToolError(f"no record {rid}")
+        return {
+            stance: {k: rec[k] for k in ("id", "title", "proof_count", "refutation_count", "effective_confidence")},
+            "asserted_confidence": rec["confidence"],
+            "evidence": self.store.evidence(rid, 5),
+        }
+
     def forget(self, rid: str, client: str) -> dict:
         if not self.store.forget(rid, client):
             raise ToolError(f"no record {rid}")
@@ -270,6 +288,19 @@ TOOLS = [
         ["id", "changes"],
         "write",
     ),
+    (
+        "memory_corroborate",
+        "Record that an existing memory held or failed, with the quote that shows it. Use this instead of storing the same fact a second time, and instead of superseding a record you found wrong: confidence is derived from the evidence and both counts travel with the record.",
+        {
+            "id": {"type": "string"},
+            "quote": {"type": "string"},
+            "stance": {"enum": ["corroborates", "contradicts"]},
+            "agent": {"type": "string"},
+            "source_session": {"type": "string"},
+        },
+        ["id", "quote"],
+        "write",
+    ),
     ("memory_forget", "Soft-delete a record; recoverable for the retention period.", {"id": {"type": "string"}}, ["id"], "delete"),
     (
         "memory_session_close",
@@ -304,6 +335,8 @@ def call_tool(mem: Memory, name: str, args: dict, client: str, export_dir: str) 
         return mem.store_record(dict(args), client)
     if name == "memory_update":
         return mem.update(args["id"], dict(args.get("changes") or {}), client)
+    if name == "memory_corroborate":
+        return mem.corroborate(args["id"], args["quote"], args.get("stance", "corroborates"), client, args.get("agent", ""), args.get("source_session", ""))
     if name == "memory_forget":
         return mem.forget(args["id"], client)
     if name == "memory_session_close":

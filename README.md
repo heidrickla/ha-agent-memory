@@ -23,9 +23,28 @@ active until promoted, a job done only after its records are written).
 ## Tools
 
 `memory_namespace`, `memory_bootstrap`, `memory_search`, `memory_get`, `memory_timeline`,
-`memory_project_context`, `memory_store`, `memory_update`, `memory_forget`,
-`memory_session_close`, `memory_export`. Flow: `bootstrap` → `search` → `get` selected ids,
-or `project_context(namespace, task)` for one bounded packet with a reason per record.
+`memory_project_context`, `memory_store`, `memory_update`, `memory_corroborate`,
+`memory_forget`, `memory_session_close`, `memory_export`. Flow: `bootstrap` → `search` → `get`
+selected ids, or `project_context(namespace, task)` for one bounded packet with a reason per record.
+
+## Evidence
+
+`confidence` was a number the writer asserted. A second session seeing the same thing had nowhere
+to say so, and one finding a record wrong could only supersede it, which erases the history and
+leaves no trace of the disagreement. `memory_corroborate(id, quote, stance)` attaches one dated,
+attributed, quoted observation instead.
+
+| | |
+|---|---|
+| Stances | `corroborates`, `contradicts` |
+| Derived | `proof_count`, `refutation_count`, `effective_confidence` |
+| Unwitnessed record | keeps the confidence it was given; nothing already stored changes meaning |
+| Each corroboration | closes a third of the remaining distance to 1.0 |
+| Each contradiction | halves what is left, so one refusal outweighs two agreements |
+| Ranking | search uses `effective_confidence`; `why` reads `N for/M against` or `asserted, unwitnessed` |
+
+A contradicted record stays `active` and readable: disagreement is recorded, not resolved by
+deletion. Quotes pass the same secret screen as a store.
 
 ## Clients
 

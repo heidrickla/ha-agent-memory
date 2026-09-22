@@ -60,6 +60,20 @@ create table if not exists jobs (
   last_error text not null default '', done_at text, model text not null default ''
 );
 create index if not exists jobs_status on jobs(status, created_at);
+create table if not exists evidence (
+  id text primary key, record_id text not null, at text not null,
+  stance text not null default 'corroborates', quote text not null,
+  agent text not null default '', source_session text not null default ''
+);
+create index if not exists evidence_record on evidence(record_id, stance);
+"""
+"""`evidence` exists because `confidence` was a number the writer asserted and nobody could audit.
+
+A later session that saw the same thing again had nowhere to say so, and one that found a record
+WRONG could only supersede it, which throws the history away and leaves no trace of the
+disagreement. A belief is now earned instead: each row is one observation, quoted, attributed and
+dated, that either corroborates or contradicts a record. `effective_confidence` is derived from
+those, and a contradiction lowers it in the open rather than replacing the record silently.
 """
 FTS = """
 create virtual table if not exists memories_fts using fts5(title, content, content='memories', content_rowid='rowid');
@@ -106,7 +120,57 @@ class Store:
         d["project_scopes"] = json.loads(d.pop("project_scopes") or "[]")
         d["topics"] = json.loads(d.pop("topics") or "[]")
         d["commit"] = d.pop("commit_sha")
+        d.update(self.weight(d["id"], d["confidence"]))
         return d
+
+    def weight(self, rid: str, asserted: float) -> dict:
+        """What the evidence says about one record: counts, and a confidence derived from them.
+
+        An unwitnessed record keeps the confidence its writer asserted, so nothing already stored
+        changes meaning. From the first corroboration the asserted number stops deciding: each one
+        closes a third of the remaining distance to certainty, and each contradiction takes half of
+        what is left, so one credible refusal outweighs two agreements. Both counts travel with the
+        record, because a 0.9 standing on four witnesses and a 0.9 somebody typed are not the same
+        claim and the reader has to be able to tell them apart.
+        """
+        with self.lock:
+            rows = self.db.execute("select stance, count(*) n from evidence where record_id=? group by stance", (rid,)).fetchall()
+        counts = {r["stance"]: r["n"] for r in rows}
+        pro, con = counts.get("corroborates", 0), counts.get("contradicts", 0)
+        if not pro and not con:
+            return {"proof_count": 0, "refutation_count": 0, "effective_confidence": round(float(asserted), 4)}
+        conf = 0.5
+        for _ in range(pro):
+            conf += (1.0 - conf) / 3.0
+        for _ in range(con):
+            conf /= 2.0
+        return {"proof_count": pro, "refutation_count": con, "effective_confidence": round(conf, 4)}
+
+    def corroborate(self, rid: str, quote: str, stance: str, client: str, agent: str = "", source_session: str = "") -> dict | None:
+        """Attach one observation to an existing record instead of storing a near-duplicate.
+
+        This is the operation the store was missing. Two sessions learning the same fact used to
+        produce two records that then disagreed as one aged; a session finding a record wrong had to
+        supersede it and erase the trail.
+        """
+        if stance not in ("corroborates", "contradicts"):
+            raise ValueError("stance must be corroborates or contradicts")
+        rec = self.get(rid)
+        if rec is None:
+            return None
+        with self.lock:
+            self.db.execute(
+                "insert into evidence(id, record_id, at, stance, quote, agent, source_session) values (?,?,?,?,?,?,?)",
+                (str(uuid.uuid4()), rid, now_iso(), stance, quote.strip()[:1000], agent or client, source_session),
+            )
+            self.db.execute("update memories set updated_at=? where id=?", (now_iso(), rid))
+        self.audit(client, stance, rec["namespace"], rid, quote.strip()[:200])
+        return self.get(rid)
+
+    def evidence(self, rid: str, limit: int = 20) -> list[dict]:
+        with self.lock:
+            rows = self.db.execute("select stance, quote, agent, source_session, at from evidence where record_id=? order by at desc limit ?", (rid, limit)).fetchall()
+        return [dict(r) for r in rows]
 
     def audit(self, client: str, action: str, namespace: str = "", record_id: str = "", detail: str = "") -> None:
         with self.lock:
@@ -218,8 +282,12 @@ class Store:
             base = -float(r["score"]) if self.fts else 1.0  # bm25 is negative, better is lower
             scope_rank = scopes.index(d["namespace"]) if d["namespace"] in scopes else len(scopes)
             scope_w = 1.0 + 0.5 * max(0, len(scopes) - scope_rank) / max(1, len(scopes))
-            d["rank"] = round((base + 0.1) * scope_w * TYPE_WEIGHT.get(d["type"], 1.0) * (0.5 + d["confidence"]), 4)
-            d["why"] = f"scope #{scope_rank + 1} {d['namespace']}, type {d['type']}, confidence {d['confidence']:.2f}"
+            # Rank on the EARNED confidence, so a contradicted record sinks and a witnessed one
+            # rises. An unwitnessed record is unaffected: effective_confidence is then the asserted
+            # number and this is the expression it always was.
+            d["rank"] = round((base + 0.1) * scope_w * TYPE_WEIGHT.get(d["type"], 1.0) * (0.5 + d["effective_confidence"]), 4)
+            witnessed = f", {d['proof_count']} for/{d['refutation_count']} against" if d["proof_count"] or d["refutation_count"] else " (asserted, unwitnessed)"
+            d["why"] = f"scope #{scope_rank + 1} {d['namespace']}, type {d['type']}, confidence {d['effective_confidence']:.2f}{witnessed}"
             hits.append(d)
         hits.sort(key=lambda h: -h["rank"])
         return hits[:limit]
