@@ -34,7 +34,7 @@ class FakeOllama:
     def available(self) -> bool:
         return True
 
-    def answer(self, question, records):
+    def answer(self, question, records, model=""):
         self.calls.append({"question": question, "records": records})
         return self.reply
 
@@ -204,7 +204,7 @@ def test_each_job_kind_runs_its_own_handler(store):
             super().__init__()
             self.extracted = []
 
-        def extract(self, namespace, notes):
+        def extract(self, namespace, notes, model=""):
             self.extracted.append(notes)
             return '{"memories": []}'
 

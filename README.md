@@ -44,6 +44,22 @@ answered once in the background and read for nothing afterwards.
 | Grounding | the answer cites `source_ids`; nothing in scope gives `No record in scope answers this.` |
 | Brevity | at most four sentences, and cut to `ANSWER_CHARS` on the way into the store |
 
+## Model routing
+
+`ollama_models` names a chain per job kind, most preferred first. Extraction pulls typed fields out
+of messy notes; answering writes four sentences of prose. Without the option the worker uses
+`ollama_model` for both, exactly as before.
+
+```yaml
+ollama_models:
+  extract: [needle, qwen3.5:9b]
+  answer: [qwen3.5:9b]
+```
+
+The chain is also the failure path: a model missing from the host, or one whose reply will not
+parse, costs the next model rather than the job. The configured default always ends the chain, and
+a job every model failed still fails. Records and audit name the model that actually served.
+
 A stale answer stays readable and is labelled stale, never silently served as current. Model output
 passes the same secret screen as a record.
 

@@ -71,9 +71,9 @@ class Ollama:
         except (urllib.error.URLError, OSError, TimeoutError):
             return False
 
-    def answer(self, question: str, records: str) -> str:
+    def answer(self, question: str, records: str, model: str = "") -> str:
         body = {
-            "model": self.model,
+            "model": model or self.model,
             "stream": False,
             "options": {"temperature": 0.1},
             "messages": [
@@ -86,9 +86,9 @@ class Ollama:
             doc = json.load(resp)
         return (doc.get("message") or {}).get("content", "")
 
-    def extract(self, namespace: str, notes: str) -> str:
+    def extract(self, namespace: str, notes: str, model: str = "") -> str:
         body = {
-            "model": self.model,
+            "model": model or self.model,
             "stream": False,
             "format": "json",
             "options": {"temperature": 0.1},
@@ -129,15 +129,57 @@ def parse_candidates(text: str) -> list[dict]:
 
 
 class Worker:
+    """One model served both job kinds, and there was no second choice when it failed.
+
+    The two kinds are not the same problem. Extraction pulls typed fields out of messy session notes
+    and its failure mode is a reply that will not parse; answering writes four sentences of prose
+    from records already chosen. The right size differs, and `ollama_model` named one model for both
+    because there was nowhere to say otherwise.
+
+    `models_for(kind)` returns the chain to try, taken from `ollama_models` in the options -- job
+    kind to a list, most preferred first -- and falling back to `ollama_model`, so an existing
+    configuration keeps its behaviour exactly. The chain is also the failure path: a model that is
+    not pulled on the host, or that answers with something unusable, costs the next one in the list
+    rather than the whole job.
+    """
+
     def __init__(self, store: Store, options: dict, ollama: Ollama | None = None, poll_s: float = 30.0):
         self.store = store
         self.options = options
         url = (options.get("ollama_url") or "").strip()
-        self.ollama = ollama if ollama is not None else (Ollama(url, options.get("ollama_model") or "qwen3.5:9b", int(options.get("ollama_timeout_s") or 120)) if url else None)
+        self.default_model = options.get("ollama_model") or "qwen3.5:9b"
+        self.model_chains = {str(k): [str(m) for m in v if str(m).strip()] for k, v in (options.get("ollama_models") or {}).items() if v}
+        self.ollama = ollama if ollama is not None else (Ollama(url, self.default_model, int(options.get("ollama_timeout_s") or 120)) if url else None)
         self.poll_s = poll_s
         self.last_available: bool | None = None
         self.processed = 0
         self.failed = 0
+
+    def models_for(self, kind: str) -> list[str]:
+        """Models to try for this job kind, most preferred first; never empty."""
+        chain = list(self.model_chains.get(kind) or [])
+        fallback = self.default_model if self.ollama is None else (self.ollama.model or self.default_model)
+        if fallback not in chain:
+            chain.append(fallback)
+        return chain
+
+    def _try_models(self, kind: str, call) -> tuple[str, str]:
+        """Run `call(model)` down the chain; returns (model, reply). Raises the LAST error.
+
+        A model missing from the host is the ordinary case here -- the chain names what would be
+        good, not what is pulled -- so it must cost one attempt rather than the job.
+        """
+        last: Exception | None = None
+        for model in self.models_for(kind):
+            try:
+                reply = call(model)
+                if reply and reply.strip():
+                    return model, reply
+                last = ValueError(f"empty reply from {model}")
+            except (ValueError, urllib.error.URLError, OSError, TimeoutError) as err:
+                last = err
+                LOG.warning("model %s failed on a %s job: %s", model, kind, err)
+        raise last or ValueError("no model produced a reply")
 
     def state(self) -> dict:
         depth = self.store.queue_depth()
@@ -166,7 +208,14 @@ class Worker:
             self.store.job_done(job["id"], self.ollama.model)
             return 0
         notes = redact(str(payload.get("notes", ""))[:NOTES_LIMIT])
-        reply = self.ollama.extract(job["namespace"], notes)
+        # A reply that will not parse is this job's characteristic failure, and it is a property of
+        # the model, so it costs the next model in the chain rather than the job.
+        def extract_with(model: str) -> str:
+            reply = self.ollama.extract(job["namespace"], notes, model)
+            parse_candidates(reply)  # raises ValueError on a malformed reply, before the model is accepted
+            return reply
+
+        model, reply = self._try_models("extract", extract_with)
         candidates = parse_candidates(reply)
         for c in candidates:
             self.store.store(
@@ -174,15 +223,15 @@ class Worker:
                     **c,
                     "namespace": job["namespace"],
                     "status": "candidate",
-                    "agent": f"ollama:{self.ollama.model}",
+                    "agent": f"ollama:{model}",
                     "source_session": payload.get("session", ""),
                     "enrichment": tag,
                     "supersedes": None,
                 },
                 client="enrichment",
             )
-        self.store.job_done(job["id"], self.ollama.model)
-        self.store.audit("enrichment", "extract", job["namespace"], payload.get("summary_id", ""), f"{len(candidates)} candidates, model {self.ollama.model}")
+        self.store.job_done(job["id"], model)
+        self.store.audit("enrichment", "extract", job["namespace"], payload.get("summary_id", ""), f"{len(candidates)} candidates, model {model}")
         return len(candidates)
 
     def enqueue_stale(self) -> dict | None:
@@ -212,17 +261,16 @@ class Worker:
             self.store.job_done(job["id"], self.ollama.model)
             return 0
         rendered = "\n\n".join(f"[{r['id'][:8]}] {r['title']}\n{r['content'][:600]}" for r in sources)[:ANSWER_LIMIT]
-        reply = (self.ollama.answer(q["question"], redact(rendered)) or "").strip()
-        if not reply:
-            raise ValueError("empty answer from the model")
+        model, reply = self._try_models("answer", lambda m: (self.ollama.answer(q["question"], redact(rendered), m) or "").strip())
+        reply = reply.strip()
         # Model output is untrusted text like any other: it goes through the same secret screen.
         if screen(reply):
             raise ValueError("answer refused by the secret screen")
         # The prompt asks for brevity; this enforces it. A model that ignores the sentence cap gets
         # cut rather than stored at whatever length it chose.
-        self.store.set_answer(q["id"], reply[:ANSWER_CHARS], f"ollama:{self.ollama.model}", [r["id"] for r in sources], basis)
-        self.store.job_done(job["id"], self.ollama.model)
-        self.store.audit("enrichment", "answer", q["namespace"], q["id"], f"{len(sources)} sources, model {self.ollama.model}")
+        self.store.set_answer(q["id"], reply[:ANSWER_CHARS], f"ollama:{model}", [r["id"] for r in sources], basis)
+        self.store.job_done(job["id"], model)
+        self.store.audit("enrichment", "answer", q["namespace"], q["id"], f"{len(sources)} sources, model {model}")
         return 1
 
     def step(self) -> bool:
