@@ -84,12 +84,21 @@ class Memory:
             "note": NOTE,
         }
 
-    def search(self, namespace: str, query: str, topics: list[str] | None = None, limit: int = 12, include_candidates: bool = False, types: list[str] | None = None) -> dict:
+    def search(
+        self, namespace: str, query: str, topics: list[str] | None = None, limit: int = 12, include_candidates: bool = False, types: list[str] | None = None, client: str = ""
+    ) -> dict:
         scopes = self.scopes(namespace, topics)
         statuses = ("active", "candidate") if include_candidates else ("active",)
         hits = self.store.search(query, scopes, limit=max(1, min(int(limit), 50)), statuses=statuses, types=tuple(types or ()))
+        # What was asked, and how well it came back. A query can carry a secret as easily as a
+        # record can, so it passes the same screen; a screened query is counted, never quoted.
+        self.store.note_query(namespace, client, "search", "[redacted]" if screen(query) else query, len(hits), hits[0]["rank"] if hits else 0.0)
         packed, truncated, used = self._pack([self._snippet(h) for h in hits], BUDGETS["search"], ("id", "namespace", "type", "title", "snippet", "confidence", "status", "why"))
         return {"query": query, "scopes": scopes, "hits": packed, "approx_tokens": used, "truncated": truncated, "note": NOTE}
+
+    def questions(self, namespace: str, topics: list[str] | None = None, min_asked: int = 2, limit: int = 20) -> dict:
+        cands = self.store.question_candidates(self.scopes(namespace, topics), min_asked=max(1, int(min_asked)), limit=max(1, min(int(limit), 50)))
+        return {"candidates": cands, "note": "Derived from what sessions actually asked and how badly it came back; not a list of records."}
 
     def get(self, ids: list[str]) -> dict:
         recs = [r for r in (self.store.get(i) for i in ids[:20]) if r]
@@ -198,7 +207,7 @@ class Memory:
             job = self.store.enqueue("extract", namespace, {"summary_id": rec["id"], "agent": agent or client, "session": session, "notes": notes[:12000]})
         return {"stored": rec["id"], "enrichment_job": job, "enrichment": "queued" if job else "off"}
 
-    def project_context(self, namespace: str, task: str, topics: list[str] | None = None, budget: int | None = None) -> dict:
+    def project_context(self, namespace: str, task: str, topics: list[str] | None = None, budget: int | None = None, client: str = "") -> dict:
         scopes = self.scopes(namespace, topics)
         budget = min(int(budget or self.packet_budget), self.hard_limit)
         selected: list[dict] = []
@@ -218,6 +227,9 @@ class Memory:
         add(self.store.by_namespace(scopes, ("open-question", "next-step"), limit=6), "open work")
         add(self.store.by_namespace(scopes, ("failure-and-fix", "operational-procedure"), limit=6), "known failure or procedure")
         packed, truncated, used = self._pack(selected, budget, ("id", "namespace", "type", "title", "content", "confidence", "why"))
+        # A task asked for repeatedly is an information need whether or not anyone phrased it as a
+        # question, so it counts towards the same demand signal as a search.
+        self.store.note_query(namespace, client, "context", "[redacted]" if screen(task) else task, len(packed), 0.0)
         return {"namespace": namespace, "task": task, "scopes": scopes, "records": packed, "approx_tokens": used, "budget": budget, "truncated": truncated, "note": NOTE}
 
     def export(self, out_dir: str, client: str) -> dict:
@@ -289,6 +301,13 @@ TOOLS = [
         "write",
     ),
     (
+        "memory_questions",
+        "Recurring questions the store answers badly, worst first, derived from what sessions actually asked. Each carries how often it was asked, how many asks came back empty, and the queries themselves.",
+        {"namespace": {"type": "string"}, "topics": {"items": {"type": "string"}, "type": "array"}, "min_asked": {"type": "integer"}, "limit": {"type": "integer"}},
+        ["namespace"],
+        "read",
+    ),
+    (
         "memory_corroborate",
         "Record that an existing memory held or failed, with the quote that shows it. Use this instead of storing the same fact a second time, and instead of superseding a record you found wrong: confidence is derived from the evidence and both counts travel with the record.",
         {
@@ -324,17 +343,19 @@ def call_tool(mem: Memory, name: str, args: dict, client: str, export_dir: str) 
     if name == "memory_bootstrap":
         return mem.bootstrap(args["namespace"], args.get("topics"))
     if name == "memory_search":
-        return mem.search(args["namespace"], args["query"], args.get("topics"), args.get("limit") or 12, bool(args.get("include_candidates")), args.get("types"))
+        return mem.search(args["namespace"], args["query"], args.get("topics"), args.get("limit") or 12, bool(args.get("include_candidates")), args.get("types"), client)
     if name == "memory_get":
         return mem.get(list(args.get("ids") or []))
     if name == "memory_timeline":
         return mem.timeline(args["namespace"], args.get("limit") or 20)
     if name == "memory_project_context":
-        return mem.project_context(args["namespace"], args.get("task", ""), args.get("topics"), args.get("budget"))
+        return mem.project_context(args["namespace"], args.get("task", ""), args.get("topics"), args.get("budget"), client)
     if name == "memory_store":
         return mem.store_record(dict(args), client)
     if name == "memory_update":
         return mem.update(args["id"], dict(args.get("changes") or {}), client)
+    if name == "memory_questions":
+        return mem.questions(args["namespace"], args.get("topics"), args.get("min_asked") or 2, args.get("limit") or 20)
     if name == "memory_corroborate":
         return mem.corroborate(args["id"], args["quote"], args.get("stance", "corroborates"), client, args.get("agent", ""), args.get("source_session", ""))
     if name == "memory_forget":

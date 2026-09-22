@@ -23,7 +23,7 @@ active until promoted, a job done only after its records are written).
 ## Tools
 
 `memory_namespace`, `memory_bootstrap`, `memory_search`, `memory_get`, `memory_timeline`,
-`memory_project_context`, `memory_store`, `memory_update`, `memory_corroborate`,
+`memory_project_context`, `memory_questions`, `memory_store`, `memory_update`, `memory_corroborate`,
 `memory_forget`, `memory_session_close`, `memory_export`. Flow: `bootstrap` → `search` → `get`
 selected ids, or `project_context(namespace, task)` for one bounded packet with a reason per record.
 

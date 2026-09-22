@@ -66,8 +66,23 @@ create table if not exists evidence (
   agent text not null default '', source_session text not null default ''
 );
 create index if not exists evidence_record on evidence(record_id, stance);
+create table if not exists queries (
+  id text primary key, at text not null, namespace text not null, client text not null,
+  kind text not null default 'search', query text not null, norm text not null,
+  hits integer not null default 0, top_rank real not null default 0.0
+);
+create index if not exists queries_ns on queries(namespace, norm);
 """
-"""`evidence` exists because `confidence` was a number the writer asserted and nobody could audit.
+"""`queries` is where standing questions come from.
+
+Reads were not recorded at all, so what sessions actually kept asking was thrown away. Declaring
+the questions by hand would guess at the demand; measuring it is the same move as deriving
+confidence from evidence rather than asserting it. The OUTCOME is stored beside the query because
+hit count and top rank cannot be reconstructed afterwards, and the signal worth acting on is not
+"asked often" but "asked often and answered badly": a question the store already answers well
+needs no standing answer.
+
+`evidence` exists because `confidence` was a number the writer asserted and nobody could audit.
 
 A later session that saw the same thing again had nowhere to say so, and one that found a record
 WRONG could only supersede it, which throws the history away and leaves no trace of the
@@ -96,6 +111,31 @@ def now_iso() -> str:
 
 def tokens(text: str) -> int:
     return max(1, len(text) // 4)
+
+
+STOPWORDS = frozenset(
+    ["a", "an", "the", "is", "are", "was", "were", "be", "been", "do", "does", "did", "what", "which", "who", "whom", "whose", "where", "when", "why", "how", "of", "for", "to", "in", "on", "at", "by", "with", "from", "about", "into", "over", "and", "or", "not", "no", "yes", "it", "its", "this", "that", "these", "those", "i", "we", "you", "they", "he", "she", "our", "your", "their", "my", "me", "us", "any", "some", "can", "could", "should", "would", "will", "there", "here", "as", "if", "then", "than", "so", "such", "have", "has", "had", "get", "got", "need", "want", "know", "tell", "show", "find"]
+)
+
+
+def normalise(text: str) -> str:
+    """A question reduced to its distinguishing terms, sorted, so phrasing does not split a group.
+
+    This narrows the gap between two phrasings; it does not close it. "Which host runs the HA VM?"
+    gives "ha host runs vm" and "HA VM host?" gives "ha host vm", and the 0.6 overlap threshold in
+    `question_candidates` is what makes them one question. Numbers and hyphenated names survive,
+    because `prod-5` and `192.0.2.10` are exactly what the questions are about.
+    """
+    cleaned = "".join(c if (c.isalnum() or c in "-._:/") else " " for c in text.lower())
+    words = [w.strip("-._:/") for w in cleaned.split()]
+    keep = sorted({w for w in words if w and w not in STOPWORDS and len(w) > 1})
+    return " ".join(keep)
+
+
+def jaccard(a: frozenset, b: frozenset) -> float:
+    if not a or not b:
+        return 0.0
+    return len(a & b) / len(a | b)
 
 
 class Store:
@@ -247,7 +287,77 @@ class Store:
         cutoff = (dt.datetime.now(dt.UTC) - dt.timedelta(days=deleted_days)).isoformat(timespec="seconds")
         with self.lock:
             cur = self.db.execute("delete from memories where deleted_at is not null and deleted_at < ?", (cutoff,))
+            # Queries age out on the same clock. They are a demand signal, not a record.
+            self.db.execute("delete from queries where at < ?", (cutoff,))
         return cur.rowcount
+
+    def note_query(self, namespace: str, client: str, kind: str, query: str, hits: int, top_rank: float) -> None:
+        """Record one read and how well it was answered. Never raises: a failure to measure demand
+        must not fail the search that a session is actually waiting on."""
+        try:
+            n = normalise(query)
+            if not n:
+                return
+            with self.lock:
+                self.db.execute(
+                    "insert into queries(id, at, namespace, client, kind, query, norm, hits, top_rank) values (?,?,?,?,?,?,?,?,?)",
+                    (str(uuid.uuid4()), now_iso(), namespace, client, kind, query.strip()[:300], n, int(hits), float(top_rank)),
+                )
+        except sqlite3.Error:
+            pass
+
+    def question_candidates(self, scopes: list[str], min_asked: int = 2, limit: int = 20) -> list[dict]:
+        """Recurring questions the store answers badly, worst first, with the queries as evidence.
+
+        Grouping is on the normalised token set, so word order and filler do not split a question;
+        groups sharing most of their terms are then merged, because "which host runs the HA VM" and
+        "HA VM host" are one question asked twice, and counting them separately is how a real
+        demand signal gets buried under near-duplicates.
+
+        `need` rises with how often it is asked and how poorly it came back. A question already
+        answered well scores near zero however popular it is -- a standing answer would add nothing.
+        """
+        if not scopes:
+            return []
+        marks = ",".join("?" for _ in scopes)
+        with self.lock:
+            rows = self.db.execute(
+                f"select norm, query, namespace, hits, at from queries where namespace in ({marks}) order by at desc limit 5000",
+                scopes,
+            ).fetchall()
+        groups: dict[frozenset, dict] = {}
+        for r in rows:
+            key = frozenset(r["norm"].split())
+            match = next((k for k in groups if jaccard(k, key) >= 0.6), None)
+            g = groups.setdefault(match or key, {"terms": set(), "asked": 0, "zero": 0, "hits": 0, "days": set(), "examples": [], "namespace": r["namespace"]})
+            g["terms"] |= key
+            g["asked"] += 1
+            g["zero"] += 1 if r["hits"] == 0 else 0
+            g["hits"] += r["hits"]
+            g["days"].add(r["at"][:10])
+            if r["query"] not in g["examples"] and len(g["examples"]) < 4:
+                g["examples"].append(r["query"])
+        out = []
+        for g in groups.values():
+            if g["asked"] < min_asked:
+                continue
+            mean_hits = g["hits"] / g["asked"]
+            # 1.0 when every ask came back empty, 0.0 once a few records answer it every time
+            poverty = g["zero"] / g["asked"] if g["zero"] else max(0.0, 1.0 - mean_hits / 3.0)
+            out.append(
+                {
+                    "question": " ".join(sorted(g["terms"])),
+                    "namespace": g["namespace"],
+                    "asked": g["asked"],
+                    "distinct_days": len(g["days"]),
+                    "zero_hit_asks": g["zero"],
+                    "mean_hits": round(mean_hits, 2),
+                    "need": round(g["asked"] * poverty, 3),
+                    "examples": g["examples"],
+                }
+            )
+        out.sort(key=lambda c: (-c["need"], -c["asked"]))
+        return out[:limit]
 
     # ------------------------------------------------------------- reads
     def get(self, rid: str, include_deleted: bool = False) -> dict | None:
