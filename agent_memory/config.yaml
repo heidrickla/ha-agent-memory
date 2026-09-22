@@ -1,5 +1,5 @@
 name: Agent Memory
-version: "0.4.0"
+version: "0.4.1"
 slug: agent_memory
 description: Shared, bounded context for Claude Code and Codex over MCP; SQLite and FTS5, no paid model in the path
 url: https://github.com/heidrickla/ha-agent-memory

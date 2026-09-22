@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.4.1
+
+- The extract request sets `think: false`. A thinking model under `format: json` spends its whole budget thinking and returns an empty content string: two runs in three from qwen3.5:9b came back with `done_reason: length`, 2048-3585 eval tokens and zero characters, so the reply would not parse and the job burned an attempt. Raising `num_predict` made it worse. With thinking off, three runs in three returned 6-7 records in about 500 tokens.
+
 ## 0.4.0
 
 - `ollama_models` gives each job kind its own model chain as a flat list of `"<kind>:<model>"` entries, most preferred first. Extraction pulls typed fields out of messy notes and answering writes four sentences of prose; they no longer have to share a model. Without the option nothing changes, so an existing deployment keeps its behaviour.

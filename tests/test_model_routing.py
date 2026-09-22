@@ -8,13 +8,15 @@ same problem, so they should not be forced to share a model.
 from __future__ import annotations
 
 import sys
+import json
 import urllib.error
+import urllib.request
 from pathlib import Path
 
 import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "agent_memory"))
-from enrich import NOTHING_KNOWN, Worker
+from enrich import NOTHING_KNOWN, Ollama, Worker
 from store import Store
 
 NS = "gitea/example/ha-management"
@@ -55,6 +57,34 @@ def options(**over):
     o = {"github_owner": "heidrickla", "forge_owner": "example", "forge_hosts": ["forge.example"], "project_links": []}
     o.update(over)
     return o
+
+
+def test_the_extract_request_turns_thinking_off(monkeypatch):
+    """A thinking model under `format: json` spends its budget thinking and returns empty content:
+    measured two failures in three from qwen3.5:9b, `done_reason: length`, 2048-3585 eval tokens,
+    zero characters. Raising the token budget made it worse. The request has to say so, and the
+    assertion is on the bytes actually sent rather than on the source that builds them."""
+    sent = {}
+
+    class Reply:
+        def read(self):
+            return b'{"message": {"content": "{\\"memories\\": []}"}}'
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+    def fake_urlopen(req, *a, **k):
+        sent.update(json.loads(req.data.decode()))
+        return Reply()
+
+    monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+    monkeypatch.setattr(json, "load", lambda fh: json.loads(fh.read().decode()))
+    Ollama("http://x", "m").extract("ns", "notes")
+    assert sent.get("think") is False, "thinking must be off or the reply comes back empty"
+    assert sent.get("format") == "json"
 
 
 def test_the_add_on_option_shape_is_a_flat_list(store):

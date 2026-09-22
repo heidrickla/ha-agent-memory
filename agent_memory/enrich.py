@@ -91,6 +91,13 @@ class Ollama:
             "model": model or self.model,
             "stream": False,
             "format": "json",
+            # A THINKING MODEL UNDER `format: json` SPENDS ITS WHOLE BUDGET THINKING AND RETURNS AN
+            # EMPTY CONTENT STRING. Measured against qwen3.5:9b on 2026-09-22: two runs in three
+            # came back with `done_reason: "length"`, 2048-3585 eval tokens and zero characters, so
+            # `parse_candidates` raised and the job burned an attempt. Raising `num_predict` made it
+            # worse, because the budget was never the constraint. With thinking off, three runs in
+            # three returned 6-7 records in about 500 tokens and stopped on their own.
+            "think": False,
             "options": {"temperature": 0.1},
             "messages": [
                 {"role": "system", "content": INSTRUCTIONS},
