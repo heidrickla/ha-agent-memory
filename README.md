@@ -42,6 +42,7 @@ answered once in the background and read for nothing afterwards.
 | Reading | `memory_answer` is a database read: no retrieval, no model call |
 | Freshness | `basis` digests the id, timestamp and text of every source record, so staleness is a string comparison |
 | Grounding | the answer cites `source_ids`; nothing in scope gives `No record in scope answers this.` |
+| Brevity | at most four sentences, and cut to `ANSWER_CHARS` on the way into the store |
 
 A stale answer stays readable and is labelled stale, never silently served as current. Model output
 passes the same secret screen as a record.
