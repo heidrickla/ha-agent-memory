@@ -72,8 +72,5 @@ schema:
   ollama_url: url?
   ollama_model: str?
   ollama_models:
-    extract:
-      - str?
-    answer:
-      - str?
+    - str?
   ollama_timeout_s: int(10,900)?

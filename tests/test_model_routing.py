@@ -57,6 +57,21 @@ def options(**over):
     return o
 
 
+def test_the_add_on_option_shape_is_a_flat_list(store):
+    """The Supervisor makes a nested dict in the schema REQUIRED, and refused to update an add-on
+    whose stored options predated the key. A flat list is optional, and its order is the order
+    tried. The split is on the FIRST colon, because model names carry one."""
+    w = Worker(store, options(ollama_models=["extract:needle", "extract:qwen3.5:9b", "answer:qwen3.5:9b"]), ollama=Fleet({}))
+    assert w.models_for("extract")[:2] == ["needle", "qwen3.5:9b"]
+    assert w.models_for("answer")[0] == "qwen3.5:9b"
+
+
+def test_a_malformed_entry_is_ignored_not_fatal(store):
+    """Options are hand-edited on the appliance; one bad line must not stop the worker."""
+    w = Worker(store, options(ollama_models=["nonsense", "", ":", "extract:needle"]), ollama=Fleet({}))
+    assert w.models_for("extract")[0] == "needle"
+
+
 def test_an_unconfigured_worker_keeps_its_single_model(store):
     """The control for every live deployment: without `ollama_models` nothing changes."""
     w = Worker(store, options(ollama_model="qwen3.5:9b"), ollama=Fleet({}))

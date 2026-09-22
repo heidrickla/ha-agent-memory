@@ -128,6 +128,29 @@ def parse_candidates(text: str) -> list[dict]:
     return out
 
 
+def parse_model_chains(value) -> dict[str, list[str]]:
+    """Per-kind model chains from either shape.
+
+    A list of `"<kind>:<model>"` strings, in preference order, is what the add-on options carry: a
+    nested dict in the schema is REQUIRED by the Supervisor, which refused to update an add-on whose
+    stored options predated the key. A flat list is optional, and order in the list is the order
+    tried. A plain dict of kind to list is accepted too, for callers constructing a Worker directly.
+
+    The split is on the FIRST colon only, because model names carry one: `extract:qwen3.5:9b` is the
+    extract kind and the `qwen3.5:9b` model.
+    """
+    chains: dict[str, list[str]] = {}
+    if isinstance(value, dict):
+        return {str(k): [str(m) for m in v if str(m).strip()] for k, v in value.items() if v}
+    for item in value or []:
+        kind, _, model = str(item).partition(":")
+        kind, model = kind.strip(), model.strip()
+        if not kind or not model:
+            continue
+        chains.setdefault(kind, []).append(model)
+    return chains
+
+
 class Worker:
     """One model served both job kinds, and there was no second choice when it failed.
 
@@ -148,7 +171,7 @@ class Worker:
         self.options = options
         url = (options.get("ollama_url") or "").strip()
         self.default_model = options.get("ollama_model") or "qwen3.5:9b"
-        self.model_chains = {str(k): [str(m) for m in v if str(m).strip()] for k, v in (options.get("ollama_models") or {}).items() if v}
+        self.model_chains = parse_model_chains(options.get("ollama_models"))
         self.ollama = ollama if ollama is not None else (Ollama(url, self.default_model, int(options.get("ollama_timeout_s") or 120)) if url else None)
         self.poll_s = poll_s
         self.last_available: bool | None = None
