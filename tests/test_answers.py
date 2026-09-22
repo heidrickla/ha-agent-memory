@@ -7,6 +7,7 @@ reads current and is not is worse than no answer at all.
 
 from __future__ import annotations
 
+import re
 import sys
 from pathlib import Path
 
@@ -14,7 +15,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "agent_memory"))
 import mcp as mcp_mod
-from enrich import NOTHING_KNOWN, Worker
+from enrich import ANSWER_CHARS, ANSWER_INSTRUCTIONS, ANSWER_SENTENCES, NOTHING_KNOWN, Worker
 from store import Store
 
 NS = "gitea/example/ha-management"
@@ -149,6 +150,26 @@ def test_an_answer_carrying_a_secret_is_refused(store):
     w.step()
     q = store.find_question([NS], QUESTION)
     assert q["answer"] == "", "model output goes through the same secret screen as a record"
+
+
+def test_a_long_answer_is_cut_to_the_cap(store):
+    """The prompt asks for brevity and this enforces it. A model that ignores the sentence cap is
+    cut rather than stored at whatever length it chose."""
+    record(store, "The HA VM lives on ESXi-Prod-5", "Prod-5 carries the HA VM.")
+    store.add_question(NS, QUESTION, "desk")
+    drain(store, FakeOllama("Prod-5. " * 800))
+    assert len(store.find_question([NS], QUESTION)["answer"]) <= ANSWER_CHARS
+
+
+def test_the_prompt_forbids_the_padding_it_was_written_for(store):
+    """Named because both habits were observed from qwen3.5:9b under v1, whose only brevity rule was
+    a word ceiling it treated as a target."""
+    lowered = ANSWER_INSTRUCTIONS.lower()
+    assert "the records say" in lowered, "the source-narration habit must be named, not implied"
+    assert "already written" in lowered, "the restatement habit must be named, not implied"
+    assert "sentences" in lowered and str(ANSWER_SENTENCES) in ANSWER_INSTRUCTIONS
+    # "in other words" is fine; a numeric word ceiling is not, because v1 read one as a target.
+    assert re.search(r"\d+\s+words", lowered) is None, "the cap belongs in sentences, not words"
 
 
 def test_the_same_question_twice_is_one_question(store):
