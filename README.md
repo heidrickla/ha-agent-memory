@@ -23,9 +23,28 @@ active until promoted, a job done only after its records are written).
 ## Tools
 
 `memory_namespace`, `memory_bootstrap`, `memory_search`, `memory_get`, `memory_timeline`,
-`memory_project_context`, `memory_questions`, `memory_store`, `memory_update`, `memory_corroborate`,
-`memory_forget`, `memory_session_close`, `memory_export`. Flow: `bootstrap` → `search` → `get`
-selected ids, or `project_context(namespace, task)` for one bounded packet with a reason per record.
+`memory_project_context`, `memory_answer`, `memory_question_add`, `memory_questions`,
+`memory_store`, `memory_update`, `memory_corroborate`, `memory_forget`, `memory_session_close`,
+`memory_export`. Flow: `bootstrap` → `search` → `get` selected ids, or
+`project_context(namespace, task)` for one bounded packet with a reason per record.
+
+## Standing questions
+
+`bootstrap` returns an index and `project_context` retrieves afresh every call. Neither is a
+maintained answer, so a session needing settled knowledge rediscovers it. A standing question is
+answered once in the background and read for nothing afterwards.
+
+| | |
+|---|---|
+| Where questions come from | `memory_questions` ranks what sessions actually asked; `memory_question_add` declares one |
+| Demand signal | asked often AND answered badly; a well-answered question scores near zero |
+| Who answers | the existing job queue and Ollama worker, one refresh per idle poll, no scheduler |
+| Reading | `memory_answer` is a database read: no retrieval, no model call |
+| Freshness | `basis` digests the id, timestamp and text of every source record, so staleness is a string comparison |
+| Grounding | the answer cites `source_ids`; nothing in scope gives `No record in scope answers this.` |
+
+A stale answer stays readable and is labelled stale, never silently served as current. Model output
+passes the same secret screen as a record.
 
 ## Evidence
 

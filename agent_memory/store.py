@@ -7,6 +7,7 @@ Tokens are approximated as characters / 4 throughout; every packet reports its e
 from __future__ import annotations
 
 import datetime as dt
+import hashlib
 import json
 import os
 import sqlite3
@@ -72,6 +73,26 @@ create table if not exists queries (
   hits integer not null default 0, top_rank real not null default 0.0
 );
 create index if not exists queries_ns on queries(namespace, norm);
+create table if not exists questions (
+  id text primary key, created_at text not null, updated_at text not null,
+  namespace text not null, question text not null, norm text not null,
+  answer text not null default '', answered_at text, model text not null default '',
+  source_ids text not null default '[]', basis text not null default '',
+  status text not null default 'active', asked integer not null default 0
+);
+create unique index if not exists questions_key on questions(namespace, norm);
+"""
+"""`questions` holds a standing answer per question, so reading settled knowledge is a database read.
+
+`memory_bootstrap` returns an index and `memory_project_context` retrieves afresh every time. Neither
+is a maintained answer, so a session that needs one rediscovers it. A question here is answered once
+in the background and read for nothing afterwards.
+
+`basis` is what makes that safe. It digests the id, the timestamp AND the text of every record the
+answer was written from, so staleness is a string comparison with no model and no retrieval: if a
+source record changed, or a new record now matches, the answer is known to be behind. `source_ids`
+travels with it for the same reason evidence travels with a belief: an answer nobody can trace back
+to records is an assertion.
 """
 """`queries` is where standing questions come from.
 
@@ -305,6 +326,82 @@ class Store:
                 )
         except sqlite3.Error:
             pass
+
+    def add_question(self, namespace: str, question: str, client: str, asked: int = 0) -> dict:
+        """Declare a standing question. Asking the same thing twice returns the existing one."""
+        n = normalise(question)
+        if not n:
+            raise ValueError("a question of nothing but filler is not a question")
+        ts = now_iso()
+        with self.lock:
+            row = self.db.execute("select * from questions where namespace=? and norm=?", (namespace, n)).fetchone()
+            if row:
+                if asked > row["asked"]:
+                    self.db.execute("update questions set asked=?, updated_at=? where id=?", (asked, ts, row["id"]))
+                return self.get_question(row["id"])
+            qid = str(uuid.uuid4())
+            self.db.execute(
+                "insert into questions(id, created_at, updated_at, namespace, question, norm, asked) values (?,?,?,?,?,?,?)",
+                (qid, ts, ts, namespace, question.strip()[:300], n, int(asked)),
+            )
+        self.audit(client, "question", namespace, qid, question.strip()[:200])
+        return self.get_question(qid)
+
+    def get_question(self, qid: str) -> dict | None:
+        with self.lock:
+            r = self.db.execute("select * from questions where id=?", (qid,)).fetchone()
+        if r is None:
+            return None
+        d = dict(r)
+        d["source_ids"] = json.loads(d["source_ids"] or "[]")
+        d["stale"] = d["basis"] != self.basis_for(d["namespace"], d["question"])
+        return d
+
+    def find_question(self, scopes: list[str], question: str) -> dict | None:
+        n = normalise(question)
+        if not n or not scopes:
+            return None
+        marks = ",".join("?" for _ in scopes)
+        with self.lock:
+            rows = self.db.execute(f"select id, norm from questions where namespace in ({marks}) and status='active'", scopes).fetchall()
+        key = frozenset(n.split())
+        best = max(rows, key=lambda r: jaccard(frozenset(r["norm"].split()), key), default=None)
+        if best is None or jaccard(frozenset(best["norm"].split()), key) < 0.6:
+            return None
+        return self.get_question(best["id"])
+
+    def sources_for(self, namespace: str, question: str, limit: int = 8) -> list[dict]:
+        """The records a standing answer is written from: the same search a session would run."""
+        return self.search(question, [namespace], limit=limit)
+
+    def basis_for(self, namespace: str, question: str) -> str:
+        """A digest of the records that answer this question, as they stand right now.
+
+        Comparing this to the stored `basis` is how staleness is known without a model: it moves
+        when a source record is edited and when a new record starts matching.
+        """
+        rows = self.sources_for(namespace, question)
+        # The CONTENT is digested, not just the id and the timestamp. `now_iso` has second
+        # resolution, so a record edited within the same second keeps its `updated_at`, and a
+        # timestamp-only basis would call the answer fresh while the material under it had changed.
+        material = "|".join(f"{r['id']}:{r['updated_at']}:{r['title']}:{r['content']}" for r in sorted(rows, key=lambda r: r["id"]))
+        return hashlib.sha256(material.encode()).hexdigest()[:16]
+
+    def set_answer(self, qid: str, answer: str, model: str, source_ids: list[str], basis: str) -> dict | None:
+        ts = now_iso()
+        with self.lock:
+            self.db.execute(
+                "update questions set answer=?, answered_at=?, model=?, source_ids=?, basis=?, updated_at=? where id=?",
+                (answer.strip()[:4000], ts, model, json.dumps(source_ids), basis, ts, qid),
+            )
+        return self.get_question(qid)
+
+    def stale_questions(self, limit: int = 20) -> list[dict]:
+        """Questions never answered, or whose sources have moved since they were."""
+        with self.lock:
+            rows = self.db.execute("select id from questions where status='active' order by answered_at is not null, updated_at limit ?", (limit * 4,)).fetchall()
+        out = [q for q in (self.get_question(r["id"]) for r in rows) if q and q["stale"]]
+        return out[:limit]
 
     def question_candidates(self, scopes: list[str], min_asked: int = 2, limit: int = 20) -> list[dict]:
         """Recurring questions the store answers badly, worst first, with the queries as evidence.

@@ -96,6 +96,39 @@ class Memory:
         packed, truncated, used = self._pack([self._snippet(h) for h in hits], BUDGETS["search"], ("id", "namespace", "type", "title", "snippet", "confidence", "status", "why"))
         return {"query": query, "scopes": scopes, "hits": packed, "approx_tokens": used, "truncated": truncated, "note": NOTE}
 
+    def answer(self, namespace: str, question: str) -> dict:
+        """A standing answer, read from the database. Never retrieves, never calls a model.
+
+        A question with no standing answer, or one whose sources have moved since it was written,
+        says so rather than returning a confident stale paragraph. That is the whole reason `basis`
+        exists: the alternative is an answer that reads current and is not.
+        """
+        scopes = self.scopes(namespace)
+        q = self.store.find_question(scopes, question)
+        if q is None:
+            return {"question": question, "answered": False, "why": "no standing question matches this; memory_question_add declares one", "note": NOTE}
+        return {
+            "question": q["question"],
+            "answered": bool(q["answered_at"]),
+            "answer": q["answer"],
+            "stale": q["stale"],
+            "answered_at": q["answered_at"],
+            "model": q["model"],
+            "sources": q["source_ids"],
+            "why": "the records this answer was written from have changed since" if q["stale"] else "current as of the sources listed",
+            "note": NOTE,
+        }
+
+    def question_add(self, namespace: str, question: str, client: str) -> dict:
+        self.scopes(namespace)
+        if screen(question):
+            raise ToolError("not added: the question screens as carrying a secret")
+        try:
+            q = self.store.add_question(namespace, question, client)
+        except ValueError as err:
+            raise ToolError(str(err)) from err
+        return {"question": {k: q[k] for k in ("id", "namespace", "question", "answered_at", "stale")}}
+
     def questions(self, namespace: str, topics: list[str] | None = None, min_asked: int = 2, limit: int = 20) -> dict:
         cands = self.store.question_candidates(self.scopes(namespace, topics), min_asked=max(1, int(min_asked)), limit=max(1, min(int(limit), 50)))
         return {"candidates": cands, "note": "Derived from what sessions actually asked and how badly it came back; not a list of records."}
@@ -301,6 +334,20 @@ TOOLS = [
         "write",
     ),
     (
+        "memory_answer",
+        "The standing answer to a question, read straight from the database: no retrieval, no model call. Says plainly when there is no answer yet, or when the records it was written from have changed since.",
+        {"namespace": {"type": "string"}, "question": {"type": "string"}},
+        ["namespace", "question"],
+        "read",
+    ),
+    (
+        "memory_question_add",
+        "Declare a standing question. A background worker writes its answer from the records and rewrites it when they change.",
+        {"namespace": {"type": "string"}, "question": {"type": "string"}},
+        ["namespace", "question"],
+        "write",
+    ),
+    (
         "memory_questions",
         "Recurring questions the store answers badly, worst first, derived from what sessions actually asked. Each carries how often it was asked, how many asks came back empty, and the queries themselves.",
         {"namespace": {"type": "string"}, "topics": {"items": {"type": "string"}, "type": "array"}, "min_asked": {"type": "integer"}, "limit": {"type": "integer"}},
@@ -354,6 +401,10 @@ def call_tool(mem: Memory, name: str, args: dict, client: str, export_dir: str) 
         return mem.store_record(dict(args), client)
     if name == "memory_update":
         return mem.update(args["id"], dict(args.get("changes") or {}), client)
+    if name == "memory_answer":
+        return mem.answer(args["namespace"], args["question"])
+    if name == "memory_question_add":
+        return mem.question_add(args["namespace"], args["question"], client)
     if name == "memory_questions":
         return mem.questions(args["namespace"], args.get("topics"), args.get("min_asked") or 2, args.get("limit") or 20)
     if name == "memory_corroborate":
