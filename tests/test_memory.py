@@ -195,6 +195,8 @@ def test_anchor_tools_and_forgotten_records(memory, store):
     assert [a["anchor"] for a in listed["anchors"]] == ["path:D:/a.txt"]
     out = mcp.call_tool(memory, "memory_anchor_report", {"id": r["id"], "anchor": "path:D:/a.txt", "state": "missing"}, "desk", "")
     assert out["filed"] == "contradicts"
+    got = memory.get([r["id"]])["records"][0]
+    assert got["anchors"] == ["path:D:/a.txt"] and got["refutation_count"] == 1, "memory_get shows anchors and evidence"
     assert "anchors" in dict(mcp.tool_list()[[t["name"] for t in mcp.tool_list()].index("memory_store")])["inputSchema"]["properties"]
     assert mcp.TOOL_SCOPE["memory_anchor_report"] == "write" and mcp.TOOL_SCOPE["memory_anchors"] == "read"
     store.forget(r["id"], "desk")
