@@ -90,6 +90,34 @@ def test_store_search_supersede_forget_and_purge(store):
     assert stats["memories"] == 2 and stats["namespaces"] == 1
 
 
+def test_search_matches_other_forms_of_a_word(store):
+    """Stemmed: a query in one form of a word finds a record written in another."""
+    a = store.store(rec(title="Reboot the gateway from the router page", content="A reboot takes two minutes."), "desk")
+    b = store.store(rec(title="Nightly check of backup age", content="The loops add-on looks at the newest backup."), "desk")
+    assert [h["id"] for h in store.search("rebooting", [NS])] == [a["id"]]
+    assert [h["id"] for h in store.search("checks", [NS])] == [b["id"]]
+
+
+def test_an_index_made_before_stemming_is_rebuilt_on_open(tmp_path):
+    """A database indexed without stemming is rebuilt once when opened: every record stays findable
+    and other word forms find it afterwards."""
+    path = str(tmp_path / "old.sqlite")
+    old = Store(path)
+    r = old.store(rec(title="Reboot the gateway from the router page", content="A reboot takes two minutes."), "desk")
+    old.db.executescript("""
+        drop table memories_fts;
+        create virtual table memories_fts using fts5(title, content, content='memories', content_rowid='rowid');
+        insert into memories_fts(memories_fts) values ('rebuild');
+    """)
+    assert old.search("rebooting", [NS]) == [], "the plain index should not see other word forms"
+    old.db.close()
+    reopened = Store(path)
+    assert "porter" in reopened.db.execute("select sql from sqlite_master where name='memories_fts'").fetchone()[0]
+    assert [h["id"] for h in reopened.search("reboot", [NS])] == [r["id"]]
+    assert [h["id"] for h in reopened.search("rebooting", [NS])] == [r["id"]]
+    assert reopened.integrity() == "ok"
+
+
 def test_scope_order_and_isolation(memory, store):
     store.store(rec(namespace="gitea/example/ha-loops", title="Loops runs at 03:30", content="The nightly run is at 03:30 local."), "desk")
     store.store(rec(namespace="projects/homelab", title="Shared: forge is 192.0.2.20", content="The personal forge answers on 192.0.2.20:3000."), "desk")

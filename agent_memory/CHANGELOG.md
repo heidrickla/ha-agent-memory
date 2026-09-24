@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.4.2
+
+- Search is stemmed (FTS5 `porter` over `unicode61`), so a query in one form of a word finds a record written in another: "rebooting" finds "reboot", "checks" finds "check". A database indexed before this is rebuilt once when the add-on starts; the records themselves are untouched.
+- Measured offline on the 24 live records with 72 queries written and frozen beforehand: mean reciprocal rank 0.77 to 0.83; same words 0.95 to 0.96, other word forms 0.88 to 0.93, paraphrases 0.50 to 0.60.
+- Tried and left out: dropping stopwords from the query (paraphrases lost their only shared words and ten went from a low rank to no hit at all) and a trigram index fused with the word index (no measurable gain on these queries).
+
 ## 0.4.1
 
 - The extract request sets `think: false`. A thinking model under `format: json` spends its whole budget thinking and returns an empty content string: two runs in three from qwen3.5:9b came back with `done_reason: length`, 2048-3585 eval tokens and zero characters, so the reply would not parse and the job burned an attempt. Raising `num_predict` made it worse. With thinking off, three runs in three returned 6-7 records in about 500 tokens.

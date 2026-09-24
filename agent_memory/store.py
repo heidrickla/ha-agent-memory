@@ -111,8 +111,10 @@ disagreement. A belief is now earned instead: each row is one observation, quote
 dated, that either corroborates or contradicts a record. `effective_confidence` is derived from
 those, and a contradiction lowers it in the open rather than replacing the record silently.
 """
+# Stemmed, so "restarting" finds "restart" and "checks" finds "check". A database indexed before
+# stemming is rebuilt once when opened (`Store._index`).
 FTS = """
-create virtual table if not exists memories_fts using fts5(title, content, content='memories', content_rowid='rowid');
+create virtual table if not exists memories_fts using fts5(title, content, content='memories', content_rowid='rowid', tokenize='porter unicode61 remove_diacritics 2');
 create trigger if not exists memories_ai after insert on memories begin
   insert into memories_fts(rowid, title, content) values (new.rowid, new.title, new.content);
 end;
@@ -169,11 +171,22 @@ class Store:
         self.db.execute("pragma journal_mode=wal")
         self.db.execute("pragma synchronous=normal")
         self.db.executescript(SCHEMA)
+        self.fts = self._index(FTS, "memories_fts", "porter")
+
+    def _index(self, ddl: str, table: str, tokenizer: str) -> bool:
+        """Create the full-text index, or rebuild one made with another tokenizer. False when this
+        SQLite has no FTS5, and search then falls back to LIKE."""
         try:
-            self.db.executescript(FTS)
-            self.fts = True
+            row = self.db.execute("select sql from sqlite_master where type='table' and name=?", (table,)).fetchone()
+            stale = row is not None and tokenizer not in row[0]
+            if stale:
+                self.db.execute(f"drop table {table}")
+            self.db.executescript(ddl)
+            if stale:
+                self.db.execute(f"insert into {table}({table}) values ('rebuild')")
+            return True
         except sqlite3.OperationalError:
-            self.fts = False
+            return False
 
     # ------------------------------------------------------------- helpers
     def _row(self, r: sqlite3.Row) -> dict:

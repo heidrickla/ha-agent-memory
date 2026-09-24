@@ -11,7 +11,7 @@ active until promoted, a job done only after its records are written).
 
 | Piece | Choice |
 |---|---|
-| Storage | SQLite in WAL mode under `/data`, FTS5 over title and content, append-only audit, durable job queue |
+| Storage | SQLite in WAL mode under `/data`, FTS5 over title and content (stemmed, `porter`), append-only audit, durable job queue |
 | Agent interface | MCP over streamable HTTP with JSON responses: `POST http://<ha>:8765/mcp`; the same tools as REST under `/api/` |
 | Namespaces | `github/<owner>/<repo>` and `gitea/<owner>/<repo>` from git remotes (other owners are refused), `projects/<name>`, `topics/<name>`, `global`, `local/<name>` |
 | Retrieval order | repository, its linked projects, given topics, global |
