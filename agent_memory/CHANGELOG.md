@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.7.0
+
+- `namespace_renames` option: a list of `{from, to}` owner prefixes (`gitea/example/` to `gitea/heidrickla/`) applied at start to records, their `repository`, jobs, queries and standing questions. Idempotent; one `rename-namespaces` audit row per move that changed something; a question already under the new namespace keeps that copy.
+- Defaults follow the forge owner rename: `forge_owner: heidrickla`, and `project_links` and `hubs` name `gitea/heidrickla/...`. The Supervisor keeps an existing install's values, so those three are set with the rename.
+
 ## 0.6.0
 
 - Records carry optional `anchors`, what the fact is about: `entity:<entity_id>`, `path:<path>`, `host:<address>`, `url:<url>`. Set on `memory_store`, replaced with `memory_update`.

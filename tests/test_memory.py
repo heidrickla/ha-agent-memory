@@ -62,6 +62,49 @@ def test_namespace_normalisation_accepts_ours_and_refuses_others():
     assert ns.scopes_for(NS, {"homelab": [NS]}, ["networking"]) == [NS, "projects/homelab", "topics/networking", "global"]
 
 
+def test_an_owner_rename_moves_every_namespace_under_it_once(store):
+    old, new = "gitea/example/", "gitea/heidrickla/"
+    a = store.store(rec(repository="gitea/example/ha-management"), "desk")
+    b = store.store(rec(namespace="gitea/example/ha-loops", title="Nightly checks", content="The loops add-on runs the nightly checks."), "desk")
+    gh = store.store(rec(namespace="github/heidrickla/ha-glkvm", title="GitHub copy", content="A GitHub namespace is not the forge."), "desk")
+    store.note_query(NS, "desk", "search", "nightly checks", 1, 0.5)
+    store.enqueue("enrich", NS, {"id": a["id"]})
+    store.add_question(NS, "Which host runs the HA VM?", "desk")
+    store.add_question("gitea/heidrickla/ha-management", "Which host runs the HA VM?", "desk")
+    store.add_question("gitea/example/ha-loops", "When do the loops run?", "desk")
+
+    moved = store.rename_namespaces(old, new, "desk")
+    assert moved == {
+        "memories.namespace": 2, "memories.repository": 1, "jobs.namespace": 1, "queries.namespace": 1,
+        "questions.namespace": 1, "questions.duplicates_dropped": 1,
+    }
+    assert store.get(a["id"])["namespace"] == "gitea/heidrickla/ha-management"
+    assert store.get(a["id"])["repository"] == "gitea/heidrickla/ha-management"
+    assert store.get(b["id"])["namespace"] == "gitea/heidrickla/ha-loops"
+    assert store.get(gh["id"])["namespace"] == "github/heidrickla/ha-glkvm"
+    assert [h["id"] for h in store.search("nightly", ["gitea/heidrickla/ha-loops"])] == [b["id"]]
+    assert store.search("nightly", ["gitea/example/ha-loops"]) == []
+    for table in ("memories", "jobs", "queries", "questions"):
+        assert store.db.execute(f"select count(*) from {table} where namespace like 'gitea/example/%'").fetchone()[0] == 0, table
+    assert store.db.execute("select count(*) from questions").fetchone()[0] == 2
+    audit = store.db.execute("select detail from audit where action='rename-namespaces'").fetchall()
+    assert len(audit) == 1 and json.loads(audit[0][0])["from"] == old
+
+    assert not any(store.rename_namespaces(old, new, "desk").values())
+    assert store.db.execute("select count(*) from audit where action='rename-namespaces'").fetchone()[0] == 1
+    for bad in (("gitea/example", new), ("gitea/", new), (old, old), ("local/x/", new)):
+        with pytest.raises(ValueError):
+            store.rename_namespaces(*bad)
+
+
+def test_the_add_on_applies_namespace_renames_from_its_options(tmp_path):
+    first = srv.App(OPTIONS, str(tmp_path))
+    rid = first.store.store(rec(), "desk")["id"]
+    first.store.db.close()
+    renamed = srv.App({**OPTIONS, "forge_owner": "heidrickla", "namespace_renames": [{"from": "gitea/example/", "to": "gitea/heidrickla/"}]}, str(tmp_path))
+    assert renamed.store.get(rid)["namespace"] == "gitea/heidrickla/ha-management"
+
+
 def test_secret_filter_refuses_credentials_and_marker():
     assert filters.screen("-----BEGIN RSA PRIVATE KEY-----\nabc") == "private_key"
     assert filters.screen("token: uk1_QQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQ") in ("kuma_key", "assignment")

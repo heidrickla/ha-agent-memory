@@ -85,6 +85,10 @@ class App:
         self.options = options
         self.data_dir = data_dir
         self.store = Store(os.path.join(data_dir, "memory.sqlite"))
+        # A forge or GitHub owner rename moves its stored namespaces; idempotent, so the option can stay.
+        for rename in options.get("namespace_renames") or []:
+            moved = self.store.rename_namespaces(rename["from"], rename["to"])
+            LOG.info("namespace rename %s -> %s: %s", rename["from"], rename["to"], moved)
         self.memory = mcp.Memory(self.store, options)
         self.memory.entity_ids = ha_entity_ids
         self.auth = Auth(options.get("clients") or [])

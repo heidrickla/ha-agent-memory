@@ -12,7 +12,7 @@ SCP_RE = re.compile(r"^(?:[\w.-]+@)?(?P<host>[\w.-]+):(?P<path>[^:]+)$")
 
 def normalize_remote(url: str, github_owner: str, forge_owner: str, forge_hosts: tuple[str, ...]) -> str | None:
     """`git@github.com:heidrickla/homelab.git` and its https/ssh forms -> github/heidrickla/homelab;
-    `ssh://forge.example/example/ha-loops.git` -> gitea/example/ha-loops. None when it is not ours."""
+    `ssh://forge.example/heidrickla/ha-loops.git` -> gitea/heidrickla/ha-loops. None when it is not ours."""
     url = url.strip()
     if not url:
         return None

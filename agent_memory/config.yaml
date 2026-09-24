@@ -1,5 +1,5 @@
 name: Agent Memory
-version: "0.6.0"
+version: "0.7.0"
 slug: agent_memory
 description: Shared, bounded context for Claude Code and Codex over MCP; SQLite and FTS5, no paid model in the path
 url: https://github.com/heidrickla/ha-agent-memory
@@ -31,24 +31,25 @@ options:
         - delete
         - export
   github_owner: heidrickla
-  forge_owner: example
+  forge_owner: heidrickla
   forge_hosts:
     - forge.example
     - 192.0.2.20
   project_links:
     - project: homelab
       namespaces:
-        - gitea/example/ha-management
-        - gitea/example/voice-app
-        - gitea/example/ha-loops
-        - gitea/example/ha-agent-memory
-        - gitea/example/tools-server
+        - gitea/heidrickla/ha-management
+        - gitea/heidrickla/voice-app
+        - gitea/heidrickla/ha-loops
+        - gitea/heidrickla/ha-agent-memory
+        - gitea/heidrickla/tools-server
     - project: research
       namespaces:
-        - gitea/example/ai-research
-        - gitea/example/ha-agent-harness-performance-tracker
+        - gitea/heidrickla/ai-research
+        - gitea/heidrickla/ha-agent-harness-performance-tracker
   hubs:
-    - gitea/example/ha-management
+    - gitea/heidrickla/ha-management
+  namespace_renames: []
   anchor_sweep_hours: 6
   context_budget_tokens: 4000
   hard_context_limit_tokens: 8000
@@ -72,6 +73,9 @@ schema:
         - str
   hubs:
     - str?
+  namespace_renames:
+    - from: match(^(github|gitea)/[\w.-]+/$)
+      to: match(^(github|gitea)/[\w.-]+/$)
   anchor_sweep_hours: int(1,168)
   context_budget_tokens: int(500,8000)
   hard_context_limit_tokens: int(1000,16000)

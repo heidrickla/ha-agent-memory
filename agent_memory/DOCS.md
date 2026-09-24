@@ -22,3 +22,8 @@ alone by source address. Scopes: read, write, delete, export, admin.
 A namespace in `hubs` is one whose sessions work on other repositories. Its `memory_search`
 and the task match in `memory_project_context` also cover every other repository namespace
 (`reach` in the response), at a weight below all of its own scopes.
+
+`namespace_renames` moves stored namespaces after an owner rename, applied at start:
+`{from: gitea/example/, to: gitea/heidrickla/}` rewrites every `gitea/example/<repo>` record, job,
+query and standing question to `gitea/heidrickla/<repo>`. A rerun moves nothing. Set
+`forge_owner`, `project_links` and `hubs` to the new owner at the same time.

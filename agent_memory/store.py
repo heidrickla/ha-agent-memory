@@ -618,6 +618,36 @@ class Store:
         rows = self.db.execute("select namespace, count(*) as n, max(updated_at) as last from memories where deleted_at is null group by namespace order by namespace").fetchall()
         return [dict(r) for r in rows]
 
+    RENAME_PREFIX_RE = re.compile(r"(github|gitea)/[\w.-]+/")
+
+    def rename_namespaces(self, old: str, new: str, client: str = "system") -> dict[str, int]:
+        """Move every namespace under `old` (`gitea/example/`) to `new`, for an owner rename.
+
+        Idempotent: once applied nothing carries `old`, so a rerun moves 0. `audit` keeps its
+        history and gains one row. A question already under the new namespace keeps that copy.
+        """
+        if not (self.RENAME_PREFIX_RE.fullmatch(old) and self.RENAME_PREFIX_RE.fullmatch(new)) or old == new:
+            raise ValueError(f"rename needs two distinct owner prefixes like gitea/<owner>/, got {old!r} -> {new!r}")
+        n = len(old)
+        moved: dict[str, int] = {}
+        with self.lock:
+            self.db.execute("begin")
+            try:
+                for table, column in (("memories", "namespace"), ("memories", "repository"), ("jobs", "namespace"), ("queries", "namespace")):
+                    cur = self.db.execute(f"update {table} set {column} = ? || substr({column}, ?) where substr({column}, 1, ?) = ?", (new, n + 1, n, old))
+                    moved[f"{table}.{column}"] = cur.rowcount
+                cur = self.db.execute("update or ignore questions set namespace = ? || substr(namespace, ?) where substr(namespace, 1, ?) = ?", (new, n + 1, n, old))
+                moved["questions.namespace"] = cur.rowcount
+                cur = self.db.execute("delete from questions where substr(namespace, 1, ?) = ?", (n, old))
+                moved["questions.duplicates_dropped"] = cur.rowcount
+                if any(moved.values()):
+                    self.db.execute("insert into audit(at, client, action, namespace, record_id, detail) values (?,?,?,?,?,?)", (now_iso(), client, "rename-namespaces", new, "", json.dumps({"from": old, "to": new, **moved})))
+                self.db.execute("commit")
+            except Exception:
+                self.db.execute("rollback")
+                raise
+        return moved
+
     def stats(self) -> dict:
         n = self.db.execute("select count(*) from memories where deleted_at is null").fetchone()[0]
         cand = self.db.execute("select count(*) from memories where deleted_at is null and status='candidate'").fetchone()[0]

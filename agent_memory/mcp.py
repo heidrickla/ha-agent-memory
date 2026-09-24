@@ -70,7 +70,7 @@ class Memory:
 
     # ------------------------------------------------------------ tools
     def namespace(self, remote_url: str) -> dict:
-        ns = normalize_remote(remote_url, self.o.get("github_owner") or "heidrickla", self.o.get("forge_owner") or "example", tuple(self.o.get("forge_hosts") or ["forge.example", "192.0.2.20"]))
+        ns = normalize_remote(remote_url, self.o.get("github_owner") or "heidrickla", self.o.get("forge_owner") or "heidrickla", tuple(self.o.get("forge_hosts") or ["forge.example", "192.0.2.20"]))
         return {"namespace": ns, "accepted": ns is not None, "scopes": self.scopes(ns) if ns else []}
 
     def bootstrap(self, namespace: str, topics: list[str] | None = None) -> dict:
