@@ -1,0 +1,70 @@
+"""Offline retrieval evaluation: the live records in a scratch store built by the repo's own code,
+the frozen query set, and the rank of each query's target record.
+
+  python fetch.py                    # records.json from the service's get route, which logs nothing
+  python eval.py <checkout> [label] [-v]
+
+Query classes: K uses the record's own words, M other forms of them, P a paraphrase sharing none
+of its distinctive words. queries.json is frozen by queries.sha256; a changed set is refused, so a
+result cannot be tuned by editing the questions. Scopes mimic the service: the target's namespace,
+then global. Nothing touches the live search route, so no test query lands in the demand log.
+"""
+
+import hashlib
+import json
+import pathlib
+import sys
+import tempfile
+
+HERE = pathlib.Path(__file__).parent
+repo = pathlib.Path(sys.argv[1])
+label = sys.argv[2] if len(sys.argv) > 2 else repo.name
+sys.path.insert(0, str(repo))
+from agent_memory.store import Store  # noqa: E402
+
+FROZEN = (HERE / "queries.sha256").read_text().split()[0]
+if hashlib.sha256((HERE / "queries.json").read_bytes()).hexdigest() != FROZEN:
+    sys.exit("queries.json changed after it was frozen")
+
+records = json.loads((HERE / "records.json").read_text(encoding="utf-8"))
+queries = json.loads((HERE / "queries.json").read_text(encoding="utf-8"))
+ns_of = {r["id"][:8]: r["namespace"] for r in records}
+
+with tempfile.TemporaryDirectory() as tmp:
+    store = Store(str(pathlib.Path(tmp) / "memory.db"))
+    for r in records:
+        store.store(r, "eval")
+    results = {}
+    for q in queries:
+        scopes = [ns_of[q["target"]]] + (["global"] if ns_of[q["target"]] != "global" else [])
+        # Candidates included: this measures ranking, and 14 of the 24 targets are unpromoted
+        # candidates that default search hides whatever the ranking.
+        hits = store.search(q["q"], scopes, limit=20, statuses=("active", "candidate"))
+        ids = [h["id"][:8] for h in hits]
+        rank = ids.index(q["target"]) + 1 if q["target"] in ids else None
+        results.setdefault(q["class"], []).append((rank, len(hits), q["q"]))
+    store.db.close()
+
+
+def line(name: str, rows: list) -> str:
+    n = len(rows)
+    h1 = sum(1 for r, _, _ in rows if r == 1) / n
+    h3 = sum(1 for r, _, _ in rows if r and r <= 3) / n
+    mrr = sum(1 / r for r, _, _ in rows if r) / n
+    miss = sum(1 for r, _, _ in rows if r is None)
+    mean_hits = sum(h for _, h, _ in rows) / n
+    return f"{name:<6}{n:>4}{h1:>8.2f}{h3:>8.2f}{mrr:>8.2f}{miss:>6}{mean_hits:>11.1f}"
+
+
+print(f"== {label}")
+print(f"{'class':<6}{'n':>4}{'hit@1':>8}{'hit@3':>8}{'MRR':>8}{'miss':>6}{'mean hits':>11}")
+total = []
+for cls in ("K", "M", "P"):
+    total += results.get(cls, [])
+    print(line(cls, results.get(cls, [])))
+print(line("all", total))
+if "-v" in sys.argv:
+    for cls in ("K", "M", "P"):
+        for r, h, q in results.get(cls, []):
+            if r != 1:
+                print(f"  {cls} rank={r} hits={h}  {q}")
