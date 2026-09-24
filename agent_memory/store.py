@@ -9,6 +9,7 @@ from __future__ import annotations
 import datetime as dt
 import hashlib
 import json
+import re
 import os
 import sqlite3
 import threading
@@ -40,6 +41,7 @@ TYPE_WEIGHT = {
     "implementation-change": 0.8,
     "session-summary": 0.6,
 }
+ANCHOR_RE = re.compile(r"^(?:entity|path|host|url):\S.{0,300}$")
 SCHEMA = """
 create table if not exists memories (
   id text primary key, created_at text not null, updated_at text not null,
@@ -73,6 +75,10 @@ create table if not exists queries (
   hits integer not null default 0, top_rank real not null default 0.0
 );
 create index if not exists queries_ns on queries(namespace, norm);
+create table if not exists anchors (
+  record_id text not null, anchor text not null, last_state text not null default '',
+  last_checked text, primary key (record_id, anchor)
+);
 create table if not exists questions (
   id text primary key, created_at text not null, updated_at text not null,
   namespace text not null, question text not null, norm text not null,
@@ -191,6 +197,8 @@ class Store:
     # ------------------------------------------------------------- helpers
     def _row(self, r: sqlite3.Row) -> dict:
         d = dict(r)
+        with self.lock:
+            d["anchors"] = [a[0] for a in self.db.execute("select anchor from anchors where record_id=? order by anchor", (d["id"],))]
         d["project_scopes"] = json.loads(d.pop("project_scopes") or "[]")
         d["topics"] = json.loads(d.pop("topics") or "[]")
         d["commit"] = d.pop("commit_sha")
@@ -283,10 +291,61 @@ class Store:
             )
             if rec.get("supersedes"):
                 self.db.execute("update memories set status='superseded', updated_at=? where id=? and status='active'", (ts, rec["supersedes"]))
+        self.set_anchors(rid, rec.get("anchors") or [])
         self.audit(client, "store", rec["namespace"], rid, rec.get("type") or "")
         return self.get(rid)
 
+    def set_anchors(self, rid: str, anchors: list[str]) -> None:
+        """Replace a record's anchors, keeping the check state of those that stay."""
+        wanted = sorted({str(a).strip() for a in anchors})
+        bad = [a for a in wanted if not ANCHOR_RE.match(a)]
+        if bad:
+            raise ValueError(f"anchors must be entity:, path:, host: or url: followed by a value: {bad}")
+        with self.lock:
+            if wanted:
+                marks = ",".join("?" for _ in wanted)
+                self.db.execute(f"delete from anchors where record_id=? and anchor not in ({marks})", (rid, *wanted))
+            else:
+                self.db.execute("delete from anchors where record_id=?", (rid,))
+            for a in wanted:
+                self.db.execute("insert or ignore into anchors(record_id, anchor) values (?, ?)", (rid, a))
+
+    def anchors(self, kind: str) -> list[dict]:
+        """Anchors of one kind on live active records, with their last check."""
+        with self.lock:
+            rows = self.db.execute(
+                "select a.record_id, a.anchor, a.last_state, a.last_checked from anchors a join memories m on m.id = a.record_id "
+                "where m.status='active' and m.deleted_at is null and a.anchor like ? order by a.record_id, a.anchor",
+                (kind + ":%",),
+            ).fetchall()
+        return [dict(r) for r in rows]
+
+    def report_anchor(self, rid: str, anchor: str, state: str, client: str) -> dict:
+        """Record one check. Evidence is filed only on a transition, so a sweep repeated every
+        few hours does not pile contradictions onto one record."""
+        if state not in ("ok", "missing"):
+            raise ValueError("state must be ok or missing")
+        with self.lock:
+            row = self.db.execute("select last_state from anchors where record_id=? and anchor=?", (rid, anchor)).fetchone()
+        if row is None:
+            raise ValueError(f"record {rid} has no anchor {anchor}")
+        before = row[0]
+        with self.lock:
+            self.db.execute("update anchors set last_state=?, last_checked=? where record_id=? and anchor=?", (state, now_iso(), rid, anchor))
+        filed = ""
+        if state == "missing" and before != "missing":
+            self.corroborate(rid, f"anchor {anchor} no longer resolves", "contradicts", client)
+            filed = "contradicts"
+        elif state == "ok" and before == "missing":
+            self.corroborate(rid, f"anchor {anchor} resolves again", "corroborates", client)
+            filed = "corroborates"
+        return {"record_id": rid, "anchor": anchor, "state": state, "was": before or "unchecked", "filed": filed}
+
     def update(self, rid: str, changes: dict, client: str) -> dict | None:
+        if "anchors" in changes:
+            if self.get(rid) is None:
+                return None
+            self.set_anchors(rid, list(changes["anchors"] or []))
         allowed = {"title", "content", "type", "confidence", "status", "topics", "project_scopes", "expires_at", "sensitivity"}
         sets, vals = [], []
         for k, v in changes.items():

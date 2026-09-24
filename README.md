@@ -25,7 +25,7 @@ active until promoted, a job done only after its records are written).
 `memory_namespace`, `memory_bootstrap`, `memory_search`, `memory_get`, `memory_timeline`,
 `memory_project_context`, `memory_answer`, `memory_question_add`, `memory_questions`,
 `memory_store`, `memory_update`, `memory_corroborate`, `memory_forget`, `memory_session_close`,
-`memory_export`. Flow: `bootstrap` → `search` → `get` selected ids, or
+`memory_export`, `memory_anchors`, `memory_anchor_report`, `memory_anchor_sweep`. Flow: `bootstrap` → `search` → `get` selected ids, or
 `project_context(namespace, task)` for one bounded packet with a reason per record.
 `bootstrap` lists active records and counts candidates in `candidates_pending`; `memory_timeline`
 lists candidates for review, `memory_update` promotes one, `memory_forget` drops it.

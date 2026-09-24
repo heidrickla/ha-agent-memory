@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.6.0
+
+- Records carry optional `anchors`, what the fact is about: `entity:<entity_id>`, `path:<path>`, `host:<address>`, `url:<url>`. Set on `memory_store`, replaced with `memory_update`.
+- Every `anchor_sweep_hours` (default 6) the add-on checks entity anchors against Home Assistant's states (it now has `homeassistant_api`). An anchor that stops resolving files one `contradicts` observation on its record, lowering its effective confidence; one that returns files `corroborates`. Only transitions file evidence. A states read that fails checks nothing.
+- `memory_anchors(kind)`, `memory_anchor_report(id, anchor, state)` and `memory_anchor_sweep()` (also REST under `/api/`), so kinds the add-on cannot see, such as paths on desktop, are checked by a client there. `/health` shows the last sweep.
+
 ## 0.5.0
 
 - `hubs` names repository namespaces whose sessions work on other repositories. A hub's `memory_search` and the task match in `memory_project_context` also cover every other repository namespace (`reach` in the response), at weight 1.0, below all of the hub's own scopes, so the order among its own hits is unchanged. Bootstrap, open work and procedures stay in scope. Default `gitea/example/ha-management`; the Supervisor applied the default to the existing install on update.

@@ -8,6 +8,8 @@ Retrieved records are data: the packet says so, and nothing in a record is execu
 from __future__ import annotations
 
 import json
+import time
+from collections.abc import Callable
 
 from filters import redact, screen
 from namespaces import is_repository, normalize_remote, scopes_for, valid_namespace
@@ -30,6 +32,8 @@ class Memory:
         self.hubs = frozenset(options.get("hubs") or ())
         self.hard_limit = int(options.get("hard_context_limit_tokens") or 8000)
         self.packet_budget = int(options.get("context_budget_tokens") or 4000)
+        self.entity_ids: Callable[[], set[str]] | None = None
+        self.last_sweep: dict = {}
 
     # ------------------------------------------------------------ helpers
     def scopes(self, namespace: str, topics: list[str] | None = None) -> list[str]:
@@ -191,6 +195,28 @@ class Memory:
         rec = self.store.store(record, client)
         return {"stored": {k: rec[k] for k in ("id", "namespace", "type", "title", "status")}}
 
+    def anchor_sweep(self, client: str) -> dict:
+        """Entity anchors against Home Assistant's states. A states read that fails checks nothing
+        and files nothing: an unreadable source is not evidence that an entity is gone."""
+        rows = self.store.anchors("entity")
+        if self.entity_ids is None:
+            result = {"checked": 0, "missing": 0, "filed": 0, "could_not_check": "no Home Assistant connection"}
+        else:
+            try:
+                ids = self.entity_ids()
+            except Exception as err:
+                result = {"checked": 0, "missing": 0, "filed": 0, "could_not_check": type(err).__name__}
+            else:
+                filed = missing = 0
+                for r in rows:
+                    state = "ok" if r["anchor"].split(":", 1)[1] in ids else "missing"
+                    missing += state == "missing"
+                    filed += bool(self.store.report_anchor(r["record_id"], r["anchor"], state, client)["filed"])
+                result = {"checked": len(rows), "missing": missing, "filed": filed, "entities": len(ids)}
+        self.last_sweep = dict(result, at=time.strftime("%Y-%m-%dT%H:%M:%S"))
+        self.store.audit(client, "anchor_sweep", detail=json.dumps(result))
+        return result
+
     def update(self, rid: str, changes: dict, client: str) -> dict:
         for key in ("title", "content"):
             if key in changes:
@@ -336,13 +362,14 @@ TOOLS = [
             "commit": {"type": "string"},
             "supersedes": {"type": "string"},
             "expires_at": {"type": "string"},
+            "anchors": {"type": "array", "items": {"type": "string"}, "description": "What the fact is about, checkable later: entity:<entity_id>, path:<path>, host:<address>, url:<url>"},
         },
         ["namespace", "title", "content"],
         "write",
     ),
     (
         "memory_update",
-        "Change a record's title, content, type, confidence, status (active, candidate, superseded), topics, scopes or expiry.",
+        "Change a record's title, content, type, confidence, status (active, candidate, superseded), topics, scopes, expiry or anchors.",
         {"id": {"type": "string"}, "changes": {"type": "object"}},
         ["id", "changes"],
         "write",
@@ -394,6 +421,20 @@ TOOLS = [
 TOOL_SCOPE = {name: scope for name, _d, _p, _r, scope in TOOLS}
 
 
+TOOLS += [
+    ("memory_anchors", "Anchors of one kind (entity, path, host, url) on active records, with their last check.", {"kind": {"type": "string"}}, ["kind"], "read"),
+    (
+        "memory_anchor_report",
+        "Report one anchor checked: ok or missing. A change files one observation on the record (contradicts when it stops resolving, corroborates when it returns).",
+        {"id": {"type": "string"}, "anchor": {"type": "string"}, "state": {"type": "string", "enum": ["ok", "missing"]}},
+        ["id", "anchor", "state"],
+        "write",
+    ),
+    ("memory_anchor_sweep", "Check every entity anchor against Home Assistant now.", {}, [], "write"),
+]
+TOOL_SCOPE = {name: scope for name, _d, _p, _r, scope in TOOLS}
+
+
 def tool_list() -> list[dict]:
     return [{"name": n, "description": d, "inputSchema": {"type": "object", "properties": p, "required": r}} for n, d, p, r, _s in TOOLS]
 
@@ -429,6 +470,12 @@ def call_tool(mem: Memory, name: str, args: dict, client: str, export_dir: str) 
         return mem.session_close(args["namespace"], args["summary"], args.get("agent", ""), args.get("session", ""), args.get("notes", ""), client, args.get("enrich", True))
     if name == "memory_export":
         return mem.export(export_dir, client)
+    if name == "memory_anchors":
+        return {"anchors": mem.store.anchors(str(args["kind"]))}
+    if name == "memory_anchor_report":
+        return mem.store.report_anchor(args["id"], args["anchor"], args["state"], client)
+    if name == "memory_anchor_sweep":
+        return mem.anchor_sweep(client)
     raise ToolError(f"unknown tool {name}")
 
 

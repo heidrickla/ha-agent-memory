@@ -19,6 +19,7 @@ import os
 import sys
 import threading
 import time
+import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlsplit
 
@@ -58,12 +59,34 @@ class Auth:
         return None
 
 
+def supervisor_token() -> str:
+    """The add-on's own token; a plain-sh run.sh does not export it, s6 keeps it on disk."""
+    token = os.environ.get("SUPERVISOR_TOKEN", "")
+    if not token:
+        try:
+            with open("/run/s6/container_environment/SUPERVISOR_TOKEN", encoding="utf-8") as fh:
+                token = fh.read().strip()
+        except OSError:
+            token = ""
+    return token
+
+
+def ha_entity_ids() -> set[str]:
+    token = supervisor_token()
+    if not token:
+        raise RuntimeError("no Supervisor token")
+    req = urllib.request.Request("http://supervisor/core/api/states", headers={"Authorization": f"Bearer {token}"})
+    with urllib.request.urlopen(req, timeout=60) as resp:
+        return {s["entity_id"] for s in json.loads(resp.read())}
+
+
 class App:
     def __init__(self, options: dict, data_dir: str):
         self.options = options
         self.data_dir = data_dir
         self.store = Store(os.path.join(data_dir, "memory.sqlite"))
         self.memory = mcp.Memory(self.store, options)
+        self.memory.entity_ids = ha_entity_ids
         self.auth = Auth(options.get("clients") or [])
         self.export_dir = os.path.join(data_dir, "exports")
         self.worker = enrich.Worker(self.store, options)
@@ -85,6 +108,7 @@ class App:
             "db_bytes": stats["db_bytes"],
             "jobs": stats["jobs"],
             "enrichment": enrichment,
+            "anchor_sweep": self.memory.last_sweep or {"at": None},
             "requests": self.requests,
             "denied": self.denied,
             "clients": [c.get("name") for c in self.auth.clients],
@@ -233,6 +257,15 @@ def housekeeping(app: App, stop: threading.Event) -> None:
             LOG.exception("housekeeping failed")
 
 
+def anchor_sweeps(app: App, stop: threading.Event) -> None:
+    hours = float(app.options.get("anchor_sweep_hours") or 6)
+    while not stop.wait(hours * 3600):
+        try:
+            LOG.info("anchor sweep: %s", app.memory.anchor_sweep("anchor-sweep"))
+        except Exception:
+            LOG.exception("anchor sweep failed")
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--options", required=True)
@@ -245,6 +278,7 @@ def main(argv: list[str] | None = None) -> int:
     stop = threading.Event()
     threading.Thread(target=housekeeping, args=(app, stop), name="housekeeping", daemon=True).start()
     threading.Thread(target=app.worker.loop, args=(stop,), name="enrichment", daemon=True).start()
+    threading.Thread(target=anchor_sweeps, args=(app, stop), name="anchors", daemon=True).start()
     LOG.info("serving on :%d, fts5 %s, %d clients, %d records", args.port, app.store.fts, len(app.auth.clients), app.store.stats()["memories"])
     try:
         while True:

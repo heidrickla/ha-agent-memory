@@ -14,6 +14,9 @@ configuration:
   project_links:
     name: Project links
     description: Repository namespaces that share a projects/<name> scope.
+  anchor_sweep_hours:
+    name: Anchor sweep interval (hours)
+    description: How often entity anchors are checked against Home Assistant. A record whose entity is gone gets one contradicting observation, and one corroborating when it returns.
   hubs:
     name: Hubs
     description: Repository namespaces whose search and project_context also cover every other repository namespace, ranked below their own scopes. Bootstrap is unchanged.

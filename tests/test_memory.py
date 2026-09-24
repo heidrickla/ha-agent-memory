@@ -146,6 +146,61 @@ def test_bootstrap_counts_candidates_instead_of_showing_them(memory, store):
     assert {r["id"] for r in store.timeline(NS)} == {pending["id"], settled["id"]}, "the review list keeps candidates"
 
 
+def test_anchors_are_stored_validated_and_replaced(store):
+    r = store.store(rec(anchors=["entity:sensor.b", "path:D:/x/y.txt", "entity:sensor.a"]), "desk")
+    assert store.get(r["id"])["anchors"] == ["entity:sensor.a", "entity:sensor.b", "path:D:/x/y.txt"]
+    with pytest.raises(ValueError):
+        store.store(rec(anchors=["sensor.a"]), "desk")
+    store.report_anchor(r["id"], "entity:sensor.a", "missing", "sweep")
+    store.update(r["id"], {"anchors": ["entity:sensor.a", "host:10.0.0.1"]}, "desk")
+    assert store.get(r["id"])["anchors"] == ["entity:sensor.a", "host:10.0.0.1"]
+    kept = [a for a in store.anchors("entity") if a["record_id"] == r["id"]]
+    assert kept == [dict(kept[0], anchor="entity:sensor.a", last_state="missing")], "an anchor that stays keeps its state"
+
+
+def test_anchor_reports_file_evidence_only_on_transitions(store):
+    r = store.store(rec(anchors=["entity:sensor.gone"]), "desk")
+    assert store.report_anchor(r["id"], "entity:sensor.gone", "missing", "sweep")["filed"] == "contradicts"
+    assert store.get(r["id"])["refutation_count"] == 1
+    assert store.report_anchor(r["id"], "entity:sensor.gone", "missing", "sweep")["filed"] == ""
+    assert store.get(r["id"])["refutation_count"] == 1, "a repeated sweep does not pile contradictions"
+    assert store.report_anchor(r["id"], "entity:sensor.gone", "ok", "sweep")["filed"] == "corroborates"
+    assert store.report_anchor(r["id"], "entity:sensor.gone", "ok", "sweep")["filed"] == ""
+    assert store.get(r["id"])["proof_count"] == 1
+    fresh = store.store(rec(anchors=["entity:sensor.new"]), "desk")
+    assert store.report_anchor(fresh["id"], "entity:sensor.new", "ok", "sweep")["filed"] == "", "a first ok files nothing"
+
+
+def test_anchor_sweep_checks_entities_and_trusts_no_failed_read(memory, store):
+    here = store.store(rec(title="Here", anchors=["entity:sensor.here"]), "desk")
+    gone = store.store(rec(title="Gone", anchors=["entity:sensor.gone"]), "desk")
+    assert memory.anchor_sweep("sweep")["could_not_check"] == "no Home Assistant connection"
+    memory.entity_ids = lambda: {"sensor.here", "light.x"}
+    first = memory.anchor_sweep("sweep")
+    assert (first["checked"], first["missing"], first["filed"]) == (2, 1, 1)
+    assert store.get(gone["id"])["refutation_count"] == 1 and store.get(here["id"])["refutation_count"] == 0
+    assert memory.anchor_sweep("sweep")["filed"] == 0
+
+    def broken() -> set[str]:
+        raise OSError("down")
+
+    memory.entity_ids = broken
+    assert memory.anchor_sweep("sweep") == {"checked": 0, "missing": 0, "filed": 0, "could_not_check": "OSError"}
+    assert store.get(here["id"])["refutation_count"] == 0, "an unreadable source is not evidence"
+
+
+def test_anchor_tools_and_forgotten_records(memory, store):
+    r = store.store(rec(anchors=["path:D:/a.txt"]), "desk")
+    listed = mcp.call_tool(memory, "memory_anchors", {"kind": "path"}, "desk", "")
+    assert [a["anchor"] for a in listed["anchors"]] == ["path:D:/a.txt"]
+    out = mcp.call_tool(memory, "memory_anchor_report", {"id": r["id"], "anchor": "path:D:/a.txt", "state": "missing"}, "desk", "")
+    assert out["filed"] == "contradicts"
+    assert "anchors" in dict(mcp.tool_list()[[t["name"] for t in mcp.tool_list()].index("memory_store")])["inputSchema"]["properties"]
+    assert mcp.TOOL_SCOPE["memory_anchor_report"] == "write" and mcp.TOOL_SCOPE["memory_anchors"] == "read"
+    store.forget(r["id"], "desk")
+    assert mcp.call_tool(memory, "memory_anchors", {"kind": "path"}, "desk", "")["anchors"] == []
+
+
 def test_a_hub_reaches_other_repositories_below_its_own_scopes(store):
     """A hub's sessions work on other repositories, whose records are filed there. Search and the
     task match reach them below every scope of the hub; bootstrap and a plain namespace do not."""
