@@ -2,7 +2,7 @@
 
 ## 0.5.0
 
-- `hubs` names repository namespaces whose sessions work on other repositories. A hub's `memory_search` and the task match in `memory_project_context` also cover every other repository namespace (`reach` in the response), at weight 1.0, below all of the hub's own scopes, so the order among its own hits is unchanged. Bootstrap, open work and procedures stay in scope. Default `gitea/example/ha-management`; an existing install needs the option written.
+- `hubs` names repository namespaces whose sessions work on other repositories. A hub's `memory_search` and the task match in `memory_project_context` also cover every other repository namespace (`reach` in the response), at weight 1.0, below all of the hub's own scopes, so the order among its own hits is unchanged. Bootstrap, open work and procedures stay in scope. Default `gitea/example/ha-management`; the Supervisor applied the default to the existing install on update.
 - Measured with `tools/retrieval-eval/eval.py --hub gitea/example/ha-management` on the frozen 72 queries: targets in other repositories MRR 0.00 to 0.74 (39 queries, misses 39 to 1); targets in the hub's own scopes MRR 0.80 to 0.79, hit@3 0.85 to 0.79. The default per-namespace evaluation is unchanged at 0.83.
 
 ## 0.4.3
