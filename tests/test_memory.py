@@ -151,6 +151,12 @@ def test_anchors_are_stored_validated_and_replaced(store):
     assert store.get(r["id"])["anchors"] == ["entity:sensor.a", "entity:sensor.b", "path:D:/x/y.txt"]
     with pytest.raises(ValueError):
         store.store(rec(anchors=["sensor.a"]), "desk")
+    before = store.stats()["memories"]
+    with pytest.raises(ValueError, match="must be a list"):
+        store.store(rec(anchors='["entity:sensor.a"]'), "desk")
+    with pytest.raises(ValueError):
+        store.store(rec(anchors=["nope"]), "desk")
+    assert store.stats()["memories"] == before, "a refused store writes nothing"
     store.report_anchor(r["id"], "entity:sensor.a", "missing", "sweep")
     store.update(r["id"], {"anchors": ["entity:sensor.a", "host:10.0.0.1"]}, "desk")
     assert store.get(r["id"])["anchors"] == ["entity:sensor.a", "host:10.0.0.1"]

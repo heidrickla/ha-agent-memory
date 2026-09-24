@@ -260,6 +260,8 @@ class Store:
 
     # ------------------------------------------------------------- writes
     def store(self, rec: dict, client: str) -> dict:
+        # Validated before the insert: a refused store must write nothing.
+        self.valid_anchors(rec.get("anchors") or [])
         rid = rec.get("id") or str(uuid.uuid4())
         ts = now_iso()
         row = (
@@ -295,12 +297,21 @@ class Store:
         self.audit(client, "store", rec["namespace"], rid, rec.get("type") or "")
         return self.get(rid)
 
-    def set_anchors(self, rid: str, anchors: list[str]) -> None:
-        """Replace a record's anchors, keeping the check state of those that stay."""
+    @staticmethod
+    def valid_anchors(anchors: object) -> list[str]:
+        if not isinstance(anchors, (list, tuple)):
+            # A client with a stale tool schema sends the list as one string; iterating it
+            # validated single characters.
+            raise ValueError(f"anchors must be a list of strings, got {type(anchors).__name__}")
         wanted = sorted({str(a).strip() for a in anchors})
         bad = [a for a in wanted if not ANCHOR_RE.match(a)]
         if bad:
             raise ValueError(f"anchors must be entity:, path:, host: or url: followed by a value: {bad}")
+        return wanted
+
+    def set_anchors(self, rid: str, anchors: list[str]) -> None:
+        """Replace a record's anchors, keeping the check state of those that stay."""
+        wanted = self.valid_anchors(anchors)
         with self.lock:
             if wanted:
                 marks = ",".join("?" for _ in wanted)
