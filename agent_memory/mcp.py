@@ -10,7 +10,7 @@ from __future__ import annotations
 import json
 
 from filters import redact, screen
-from namespaces import normalize_remote, scopes_for, valid_namespace
+from namespaces import is_repository, normalize_remote, scopes_for, valid_namespace
 from store import TYPES, Store, tokens
 
 PROTOCOL = "2025-06-18"
@@ -27,6 +27,7 @@ class Memory:
         self.store = store
         self.o = options
         self.project_links = {p["project"]: list(p.get("namespaces") or []) for p in (options.get("project_links") or [])}
+        self.hubs = frozenset(options.get("hubs") or ())
         self.hard_limit = int(options.get("hard_context_limit_tokens") or 8000)
         self.packet_budget = int(options.get("context_budget_tokens") or 4000)
 
@@ -35,6 +36,13 @@ class Memory:
         if not valid_namespace(namespace):
             raise ToolError(f"namespace {namespace!r} is not one of global, github/<owner>/<repo>, gitea/<owner>/<repo>, projects/<name>, topics/<name>, local/<name>")
         return scopes_for(namespace, self.project_links, topics or [])
+
+    def reach(self, namespace: str, scopes: list[str]) -> list[str]:
+        """For a hub, every other repository namespace holding records: sessions there work on
+        other repositories, and what they learn is filed under the repository it concerns."""
+        if namespace not in self.hubs:
+            return []
+        return [n["namespace"] for n in self.store.namespaces() if is_repository(n["namespace"]) and n["namespace"] not in scopes]
 
     def _pack(self, items: list[dict], budget: int, fields: tuple[str, ...]) -> tuple[list[dict], bool, int]:
         out, used, truncated = [], 0, False
@@ -91,13 +99,14 @@ class Memory:
         self, namespace: str, query: str, topics: list[str] | None = None, limit: int = 12, include_candidates: bool = False, types: list[str] | None = None, client: str = ""
     ) -> dict:
         scopes = self.scopes(namespace, topics)
+        reach = self.reach(namespace, scopes)
         statuses = ("active", "candidate") if include_candidates else ("active",)
-        hits = self.store.search(query, scopes, limit=max(1, min(int(limit), 50)), statuses=statuses, types=tuple(types or ()))
+        hits = self.store.search(query, scopes, limit=max(1, min(int(limit), 50)), statuses=statuses, types=tuple(types or ()), reach=tuple(reach))
         # What was asked, and how well it came back. A query can carry a secret as easily as a
         # record can, so it passes the same screen; a screened query is counted, never quoted.
         self.store.note_query(namespace, client, "search", "[redacted]" if screen(query) else query, len(hits), hits[0]["rank"] if hits else 0.0)
         packed, truncated, used = self._pack([self._snippet(h) for h in hits], BUDGETS["search"], ("id", "namespace", "type", "title", "snippet", "confidence", "status", "why"))
-        return {"query": query, "scopes": scopes, "hits": packed, "approx_tokens": used, "truncated": truncated, "note": NOTE}
+        return {"query": query, "scopes": scopes, "reach": reach, "hits": packed, "approx_tokens": used, "truncated": truncated, "note": NOTE}
 
     def answer(self, namespace: str, question: str) -> dict:
         """A standing answer, read from the database. Never retrieves, never calls a model.
@@ -258,15 +267,17 @@ class Memory:
                     seen.add(r["id"])
 
         add(self.store.by_namespace(scopes[:1], ("constraint", "architectural-decision"), limit=10), "constraint or decision in the repository scope")
+        # A hub's reach widens the task match only; open work and procedures stay in scope.
+        reach = self.reach(namespace, scopes)
         if task.strip():
-            add(self.store.search(task, scopes, limit=15), "matches the task")
+            add(self.store.search(task, scopes, limit=15, reach=tuple(reach)), "matches the task")
         add(self.store.by_namespace(scopes, ("open-question", "next-step"), limit=6), "open work")
         add(self.store.by_namespace(scopes, ("failure-and-fix", "operational-procedure"), limit=6), "known failure or procedure")
         packed, truncated, used = self._pack(selected, budget, ("id", "namespace", "type", "title", "content", "confidence", "why"))
         # A task asked for repeatedly is an information need whether or not anyone phrased it as a
         # question, so it counts towards the same demand signal as a search.
         self.store.note_query(namespace, client, "context", "[redacted]" if screen(task) else task, len(packed), 0.0)
-        return {"namespace": namespace, "task": task, "scopes": scopes, "records": packed, "approx_tokens": used, "budget": budget, "truncated": truncated, "note": NOTE}
+        return {"namespace": namespace, "task": task, "scopes": scopes, "reach": reach, "records": packed, "approx_tokens": used, "budget": budget, "truncated": truncated, "note": NOTE}
 
     def export(self, out_dir: str, client: str) -> dict:
         res = self.store.export(out_dir)

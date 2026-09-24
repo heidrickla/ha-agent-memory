@@ -146,6 +146,26 @@ def test_bootstrap_counts_candidates_instead_of_showing_them(memory, store):
     assert {r["id"] for r in store.timeline(NS)} == {pending["id"], settled["id"]}, "the review list keeps candidates"
 
 
+def test_a_hub_reaches_other_repositories_below_its_own_scopes(store):
+    """A hub's sessions work on other repositories, whose records are filed there. Search and the
+    task match reach them below every scope of the hub; bootstrap and a plain namespace do not."""
+    hub, plain = mcp.Memory(store, {**OPTIONS, "hubs": [NS]}), mcp.Memory(store, OPTIONS)
+    same = {"title": "Rebuild the installer after a change", "content": "The installer is rebuilt after every change; an earlier copy is out of date."}
+    own = store.store(rec(**same), "desk")
+    shared = store.store(rec(namespace="global", **same), "desk")
+    sibling = store.store(rec(namespace="gitea/example/web-access", **same), "desk")
+    store.store(rec(namespace="topics/windows", **same), "desk")
+    found = hub.search(NS, "installer rebuilt")
+    assert [h["id"] for h in found["hits"]] == [own["id"], shared["id"], sibling["id"]]
+    assert found["reach"] == ["gitea/example/web-access"], "only repository namespaces are reached"
+    assert found["hits"][2]["why"].startswith("reach gitea/example/web-access")
+    assert [h["id"] for h in plain.search(NS, "installer rebuilt")["hits"]] == [own["id"], shared["id"]]
+    assert sibling["id"] in [r["id"] for r in hub.project_context(NS, "installer rebuilt")["records"]]
+    assert sibling["id"] not in [r["id"] for r in plain.project_context(NS, "installer rebuilt")["records"]]
+    assert sibling["id"] not in [i["id"] for i in hub.bootstrap(NS)["items"]]
+    assert [h["id"] for h in hub.search("gitea/example/web-access", "installer rebuilt")["hits"]] == [sibling["id"], shared["id"]], "a namespace not in hubs keeps its scopes"
+
+
 def test_budgets_are_enforced_and_reported(memory, store):
     for i in range(60):
         store.store(rec(title=f"Fact {i} about the kiosk", content="The office kiosk " * 40 + f"number {i}."), "desk")

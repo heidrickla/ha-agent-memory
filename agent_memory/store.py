@@ -480,18 +480,24 @@ class Store:
         marks = ",".join("?" for _ in statuses)
         return f"deleted_at is null and status in ({marks}) and (expires_at is null or expires_at > '{now_iso()}')"
 
-    def search(self, query: str, scopes: list[str], limit: int = 20, statuses: tuple[str, ...] = ("active",), types: tuple[str, ...] = ()) -> list[dict]:
-        """Ranked hits: FTS relevance times scope, type and confidence weights. Snippets, not records."""
-        marks = ",".join("?" for _ in scopes)
+    def search(
+        self, query: str, scopes: list[str], limit: int = 20, statuses: tuple[str, ...] = ("active",), types: tuple[str, ...] = (), reach: tuple[str, ...] = ()
+    ) -> list[dict]:
+        """Ranked hits: FTS relevance times scope, type and confidence weights. Snippets, not records.
+
+        `reach` namespaces are searched too at weight 1.0, below every scope, so adding them
+        leaves the order among scope hits as it was."""
+        spaces = [*scopes, *(n for n in reach if n not in scopes)]
+        marks = ",".join("?" for _ in spaces)
         live = self._live(statuses)
         params: list = []
         if self.fts and query.strip():
             sql = f"select m.*, bm25(memories_fts, 2.0, 1.0) as score from memories_fts join memories m on m.rowid = memories_fts.rowid where memories_fts match ? and m.namespace in ({marks}) and {live}"
-            params = [fts_query(query), *scopes, *statuses]
+            params = [fts_query(query), *spaces, *statuses]
         else:
             like = f"%{query.strip()}%"
             sql = f"select m.*, 0.0 as score from memories m where (m.title like ? or m.content like ?) and m.namespace in ({marks}) and {live}"
-            params = [like, like, *scopes, *statuses]
+            params = [like, like, *spaces, *statuses]
         if types:
             sql += " and m.type in (" + ",".join("?" for _ in types) + ")"
             params += list(types)
@@ -507,7 +513,8 @@ class Store:
             # number and this is the expression it always was.
             d["rank"] = round((base + 0.1) * scope_w * TYPE_WEIGHT.get(d["type"], 1.0) * (0.5 + d["effective_confidence"]), 4)
             witnessed = f", {d['proof_count']} for/{d['refutation_count']} against" if d["proof_count"] or d["refutation_count"] else " (asserted, unwitnessed)"
-            d["why"] = f"scope #{scope_rank + 1} {d['namespace']}, type {d['type']}, confidence {d['effective_confidence']:.2f}{witnessed}"
+            where = f"scope #{scope_rank + 1}" if d["namespace"] in scopes else "reach"
+            d["why"] = f"{where} {d['namespace']}, type {d['type']}, confidence {d['effective_confidence']:.2f}{witnessed}"
             hits.append(d)
         hits.sort(key=lambda h: -h["rank"])
         return hits[:limit]

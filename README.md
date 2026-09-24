@@ -14,7 +14,7 @@ active until promoted, a job done only after its records are written).
 | Storage | SQLite in WAL mode under `/data`, FTS5 over title and content (stemmed, `porter`), append-only audit, durable job queue |
 | Agent interface | MCP over streamable HTTP with JSON responses: `POST http://<ha>:8765/mcp`; the same tools as REST under `/api/` |
 | Namespaces | `github/<owner>/<repo>` and `gitea/<owner>/<repo>` from git remotes (other owners are refused), `projects/<name>`, `topics/<name>`, `global`, `local/<name>` |
-| Retrieval order | repository, its linked projects, given topics, global |
+| Retrieval order | repository, its linked projects, given topics, global; a hub's search and task match then reach every other repository namespace |
 | Budgets | bootstrap 500 tokens, search 750, records 2000, packet 4000 (hard limit 8000); every response reports its estimate and truncation |
 | Auth | per-client bearer token (sha256 in options) or source address; scopes read, write, delete, export, admin |
 | Filtering | credentials, key material, JWTs, URL passwords and the `do-not-store` marker are refused and audited by pattern name |

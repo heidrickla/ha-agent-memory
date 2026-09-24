@@ -14,6 +14,9 @@ configuration:
   project_links:
     name: Project links
     description: Repository namespaces that share a projects/<name> scope.
+  hubs:
+    name: Hubs
+    description: Repository namespaces whose search and project_context also cover every other repository namespace, ranked below their own scopes. Bootstrap is unchanged.
   context_budget_tokens:
     name: Context budget
     description: Default size of a project context packet, in approximate tokens.

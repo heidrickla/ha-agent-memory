@@ -46,6 +46,10 @@ def valid_namespace(ns: str) -> bool:
     return bool(re.fullmatch(r"(global|github/[\w.-]+/[\w.-]+|gitea/[\w.-]+/[\w.-]+|projects/[\w.-]+|topics/[\w.-]+|local/[\w.-]+)", ns or ""))
 
 
+def is_repository(ns: str) -> bool:
+    return bool(re.fullmatch(r"(github|gitea)/[\w.-]+/[\w.-]+", ns or ""))
+
+
 def scopes_for(namespace: str, project_links: dict[str, list[str]], topics: list[str]) -> list[str]:
     """Retrieval order: the namespace, its linked projects, the topics, global."""
     order = [namespace]

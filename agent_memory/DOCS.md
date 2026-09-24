@@ -18,3 +18,7 @@ and one JSONL under `/data/exports`, inside Home Assistant backups.
 
 Clients are listed in the options: a `token_sha256` authenticates by bearer token, an `ip`
 alone by source address. Scopes: read, write, delete, export, admin.
+
+A namespace in `hubs` is one whose sessions work on other repositories. Its `memory_search`
+and the task match in `memory_project_context` also cover every other repository namespace
+(`reach` in the response), at a weight below all of its own scopes.
