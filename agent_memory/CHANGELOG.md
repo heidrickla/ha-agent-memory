@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.4.3
+
+- `bootstrap` lists active records only and reports `candidates_pending`, the number of unreviewed extractions in the namespace. A candidate listed at session start read as settled; 14 of the 24 live records were candidates, 10 of them stale or wrong.
+- `Store.timeline` takes an optional status filter; `memory_timeline` still returns every status, so candidates stay reviewable there.
+
 ## 0.4.2
 
 - Search is stemmed (FTS5 `porter` over `unicode61`), so a query in one form of a word finds a record written in another: "rebooting" finds "reboot", "checks" finds "check". A database indexed before this is rebuilt once when the add-on starts; the records themselves are untouched.

@@ -133,6 +133,19 @@ def test_scope_order_and_isolation(memory, store):
         memory.bootstrap("not/a/namespace")
 
 
+def test_bootstrap_counts_candidates_instead_of_showing_them(memory, store):
+    """An unreviewed candidate never appears at the start of a session as if settled; it is counted
+    so it gets reviewed. An active record of the same kind still appears."""
+    settled = store.store(rec(type="session-summary", title="Deployed the add-on", content="Version 0.4.2 is running."), "desk")
+    pending = store.store(rec(type="session-summary", title="Fix F1 is required before proceeding", content="Stale note.", status="candidate"), "desk")
+    boot = memory.bootstrap(NS)
+    shown = [i["id"] for i in boot["items"]]
+    assert settled["id"] in shown
+    assert pending["id"] not in shown
+    assert boot["candidates_pending"] == 1
+    assert {r["id"] for r in store.timeline(NS)} == {pending["id"], settled["id"]}, "the review list keeps candidates"
+
+
 def test_budgets_are_enforced_and_reported(memory, store):
     for i in range(60):
         store.store(rec(title=f"Fact {i} about the kiosk", content="The office kiosk " * 40 + f"number {i}."), "desk")

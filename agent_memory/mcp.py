@@ -65,7 +65,9 @@ class Memory:
         scopes = self.scopes(namespace, topics)
         constraints = self.store.by_namespace(scopes, ("constraint", "architectural-decision", "preference"), limit=12)
         open_work = self.store.by_namespace(scopes, ("open-question", "next-step"), limit=8)
-        recent = self.store.timeline(namespace, limit=5)
+        # Active only: a candidate is an unreviewed extraction, and the start of a session is where
+        # it would be taken as settled. Their number goes out instead, so they get reviewed.
+        recent = self.store.timeline(namespace, limit=5, statuses=("active",))
         index = self.store.namespaces()
         items, seen = [], set()
         for rows, chars in ((constraints, 120), (open_work, 120), (recent, 80)):
@@ -78,6 +80,7 @@ class Memory:
             "namespace": namespace,
             "scopes": scopes,
             "records_in_scope": sum(n["n"] for n in index if n["namespace"] in scopes),
+            "candidates_pending": self.store.count_status(namespace, "candidate"),
             "items": packed,
             "approx_tokens": used,
             "truncated": truncated,

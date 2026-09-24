@@ -523,9 +523,19 @@ class Store:
         params.append(limit)
         return [self._row(r) for r in self.db.execute(sql, params).fetchall()]
 
-    def timeline(self, namespace: str, limit: int = 30) -> list[dict]:
-        rows = self.db.execute("select * from memories where namespace=? and deleted_at is null order by created_at desc limit ?", (namespace, limit)).fetchall()
+    def timeline(self, namespace: str, limit: int = 30, statuses: tuple[str, ...] = ()) -> list[dict]:
+        """Newest first, every status unless `statuses` names some: the review of candidates reads
+        this, and bootstrap asks for active records only."""
+        sql = "select * from memories where namespace=? and deleted_at is null"
+        params: list = [namespace]
+        if statuses:
+            sql += " and status in (" + ",".join("?" for _ in statuses) + ")"
+            params += list(statuses)
+        rows = self.db.execute(sql + " order by created_at desc limit ?", (*params, limit)).fetchall()
         return [self._row(r) for r in rows]
+
+    def count_status(self, namespace: str, status: str) -> int:
+        return self.db.execute("select count(*) from memories where namespace=? and status=? and deleted_at is null", (namespace, status)).fetchone()[0]
 
     def namespaces(self) -> list[dict]:
         rows = self.db.execute("select namespace, count(*) as n, max(updated_at) as last from memories where deleted_at is null group by namespace order by namespace").fetchall()
