@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.8.0
+
+- `ollama_url` ending in `/v1` selects an OpenAI-style client (llama-server, llama-swap): availability from `/v1/models`, both job kinds through `/v1/chat/completions`, extraction with `response_format: json_object`, thinking off through `chat_template_kwargs`. Any other URL keeps the Ollama client unchanged.
+- Model names in `ollama_model` and `ollama_models` are whatever the server serves, for llama-swap its aliases.
+- Output caps on that client: 2048 tokens for extraction, 512 for an answer, so a runaway reply cannot hold a shared server's slot.
+- A 200 that is not a chat completion costs the model, like a reply that will not parse.
+- Records, answers and audit name the API with the model (`openai:<model>` or `ollama:<model>`); `/health` `enrichment.api` says which client runs.
+
 ## 0.7.1
 
 - The answer request sets `think: false`, as extraction already did. Without a `format` a thinking model still thinks until prompt plus output fill the context. On the Ollama service's 4096-token default, qwen3.5:9b returned no content on 36 of 54 answers (`done_reason: length`); live, 5 of 7 answer jobs hit an empty reply and one gave up after 5 attempts. With thinking off: 0 of 54 empty.

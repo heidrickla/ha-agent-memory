@@ -2,11 +2,11 @@
 
 Home Assistant add-on: one shared, bounded memory for Claude Code, Codex and other agents,
 so a session starts from what earlier sessions learned instead of re-reading the repository.
-Canonical storage and retrieval never depend on a paid model or on Ollama.
+Canonical storage and retrieval never depend on a paid model or on a model server.
 
 From the plan `Shared Agent Memory on Home Assistant` (2026-09-19): phases 1 to 4 are built here:
-storage, namespaces, FTS5 retrieval, progressive MCP tools, HA packaging, and enrichment through
-Ollama on desktop (`enrich.py`: redacted notes in, validated candidates out, candidates never
+storage, namespaces, FTS5 retrieval, progressive MCP tools, HA packaging, and enrichment through a
+local model server (`enrich.py`: redacted notes in, validated candidates out, candidates never
 active until promoted, a job done only after its records are written).
 
 | Piece | Choice |
@@ -40,7 +40,7 @@ answered once in the background and read for nothing afterwards.
 |---|---|
 | Where questions come from | `memory_questions` ranks what sessions actually asked; `memory_question_add` declares one |
 | Demand signal | asked often AND answered badly; a well-answered question scores near zero |
-| Who answers | the existing job queue and Ollama worker, one refresh per idle poll, no scheduler |
+| Who answers | the existing job queue and model worker, one refresh per idle poll, no scheduler |
 | Reading | `memory_answer` is a database read: no retrieval, no model call |
 | Freshness | `basis` digests the id, timestamp and text of every source record, so staleness is a string comparison |
 | Grounding | the answer cites `source_ids`; nothing in scope gives `No record in scope answers this.` |
@@ -48,6 +48,16 @@ answered once in the background and read for nothing afterwards.
 
 A stale answer stays readable and is labelled stale, never silently served as current. Model output
 passes the same secret screen as a record.
+
+## Model server
+
+| `ollama_url` | Client | Availability | Chat | Thinking off | Extraction JSON |
+|---|---|---|---|---|---|
+| ends in `/v1` | OpenAI-style (llama-server, llama-swap) | `GET /v1/models` | `POST /v1/chat/completions` | `chat_template_kwargs.enable_thinking: false` | `response_format: json_object` |
+| anything else | Ollama | `GET /api/tags` | `POST /api/chat` | `think: false` | `format: json` |
+
+Both use temperature 0.1. The OpenAI-style client caps output at 2048 tokens for extraction and 512
+for an answer. Model names are what the server serves: for llama-swap, its model IDs and aliases.
 
 ## Model routing
 

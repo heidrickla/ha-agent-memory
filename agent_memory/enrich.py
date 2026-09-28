@@ -1,4 +1,4 @@
-"""Phase 4: enrichment through the owner's own Ollama on the LAN, from the durable job queue.
+"""Phase 4: enrichment through a model server on the LAN, from the durable job queue.
 
 A session_close with notes leaves an `extract` job. The worker sends the redacted notes to
 the configured model and stores what comes back as `candidate` records, never `active`:
@@ -6,7 +6,10 @@ a person or an agent promotes a candidate with memory_update. Everything the wor
 bounded and checked: the payload is cut and redacted, the reply must be JSON of the agreed
 shape, each candidate passes the same secret screen as a direct store, and a job is marked
 done only after its candidates are written, with the job id on each so a retry after a
-crash stores nothing twice. Ollama offline means jobs wait and health reads degraded.
+crash stores nothing twice. The server offline means jobs wait and health reads degraded.
+
+The server is Ollama's native API, or an OpenAI-style one (llama-server, llama-swap) when the
+URL ends in `/v1`.
 """
 
 from __future__ import annotations
@@ -15,6 +18,7 @@ import json
 import logging
 import threading
 import urllib.error
+import urllib.parse
 import urllib.request
 
 from filters import redact, screen
@@ -59,6 +63,8 @@ ANSWER_INSTRUCTIONS = (
 
 
 class Ollama:
+    api = "ollama"
+
     def __init__(self, base_url: str, model: str, timeout_s: int = 120):
         self.base = base_url.rstrip("/")
         self.model = model
@@ -112,6 +118,64 @@ class Ollama:
         with urllib.request.urlopen(req, timeout=self.timeout) as resp:
             doc = json.load(resp)
         return (doc.get("message") or {}).get("content", "")
+
+
+# Output caps: the server is shared with voice and failover traffic, so a runaway reply must not hold a
+# slot for minutes. Measured Bonsai extractions run about 400 tokens; answers are cut to ANSWER_CHARS anyway.
+EXTRACT_TOKENS = 2048
+ANSWER_TOKENS = 512
+
+
+class OpenAIChat:
+    """The same two calls against an OpenAI-style server at a `/v1` base URL: `/models`, `/chat/completions`."""
+
+    api = "openai"
+
+    def __init__(self, base_url: str, model: str, timeout_s: int = 120):
+        self.base = base_url.rstrip("/")
+        self.model = model
+        self.timeout = timeout_s
+
+    def available(self) -> bool:
+        try:
+            with urllib.request.urlopen(f"{self.base}/models", timeout=5) as resp:
+                return resp.status == 200
+        except (urllib.error.URLError, OSError, TimeoutError):
+            return False
+
+    def _chat(self, model: str, system: str, user: str, max_tokens: int, json_out: bool) -> str:
+        body = {
+            "model": model or self.model,
+            "stream": False,
+            "temperature": 0.1,
+            "max_tokens": max_tokens,
+            # Thinking off for the same reason as `think: False` on Ollama; llama.cpp and vLLM read this.
+            "chat_template_kwargs": {"enable_thinking": False},
+            "messages": [{"role": "system", "content": system}, {"role": "user", "content": user}],
+        }
+        if json_out:
+            body["response_format"] = {"type": "json_object"}
+        req = urllib.request.Request(f"{self.base}/chat/completions", data=json.dumps(body).encode(), headers={"Content-Type": "application/json"})
+        with urllib.request.urlopen(req, timeout=self.timeout) as resp:
+            doc = json.load(resp)
+        # A 200 that is not a chat completion costs this model, like a reply that will not parse.
+        try:
+            content = doc["choices"][0]["message"].get("content")
+        except (KeyError, IndexError, TypeError, AttributeError) as err:
+            raise ValueError(f"reply is not a chat completion: {type(err).__name__}") from err
+        return content if isinstance(content, str) else ""
+
+    def answer(self, question: str, records: str, model: str = "") -> str:
+        return self._chat(model, ANSWER_INSTRUCTIONS, f"Question: {question}\n\nRecords:\n{records}", ANSWER_TOKENS, json_out=False)
+
+    def extract(self, namespace: str, notes: str, model: str = "") -> str:
+        return self._chat(model, INSTRUCTIONS, f"Repository namespace: {namespace}\n\nSession notes:\n{notes}", EXTRACT_TOKENS, json_out=True)
+
+
+def client_for(url: str, model: str, timeout_s: int = 120) -> Ollama | OpenAIChat:
+    """A base URL whose path ends in `/v1` is an OpenAI-style server; anything else is Ollama."""
+    path = urllib.parse.urlsplit(url.strip()).path.rstrip("/")
+    return OpenAIChat(url, model, timeout_s) if path.endswith("/v1") else Ollama(url, model, timeout_s)
 
 
 def parse_candidates(text: str) -> list[dict]:
@@ -177,17 +241,21 @@ class Worker:
     rather than the whole job.
     """
 
-    def __init__(self, store: Store, options: dict, ollama: Ollama | None = None, poll_s: float = 30.0):
+    def __init__(self, store: Store, options: dict, ollama: Ollama | OpenAIChat | None = None, poll_s: float = 30.0):
         self.store = store
         self.options = options
         url = (options.get("ollama_url") or "").strip()
         self.default_model = options.get("ollama_model") or "qwen3.5:9b"
         self.model_chains = parse_model_chains(options.get("ollama_models"))
-        self.ollama = ollama if ollama is not None else (Ollama(url, self.default_model, int(options.get("ollama_timeout_s") or 120)) if url else None)
+        self.ollama = ollama if ollama is not None else (client_for(url, self.default_model, int(options.get("ollama_timeout_s") or 120)) if url else None)
         self.poll_s = poll_s
         self.last_available: bool | None = None
         self.processed = 0
         self.failed = 0
+
+    def label(self, model: str) -> str:
+        """What records, answers and audit name as the author: `<api>:<model>`."""
+        return f"{getattr(self.ollama, 'api', 'ollama')}:{model}"
 
     def models_for(self, kind: str) -> list[str]:
         """Models to try for this job kind, most preferred first; never empty."""
@@ -219,6 +287,7 @@ class Worker:
         depth = self.store.queue_depth()
         return {
             "configured": self.ollama is not None,
+            "api": getattr(self.ollama, "api", "ollama") if self.ollama else None,
             "model": self.ollama.model if self.ollama else None,
             "ollama": ("available" if self.last_available else "offline") if self.ollama else "off",
             "prompt": PROMPT_VERSION,
@@ -258,7 +327,7 @@ class Worker:
                     **c,
                     "namespace": job["namespace"],
                     "status": "candidate",
-                    "agent": f"ollama:{model}",
+                    "agent": self.label(model),
                     "source_session": payload.get("session", ""),
                     "enrichment": tag,
                     "supersedes": None,
@@ -293,7 +362,7 @@ class Worker:
         sources = self.store.sources_for(q["namespace"], q["question"])
         basis = self.store.basis_for(q["namespace"], q["question"])
         if not sources:
-            self.store.set_answer(q["id"], NOTHING_KNOWN, f"ollama:{self.ollama.model}", [], basis)
+            self.store.set_answer(q["id"], NOTHING_KNOWN, self.label(self.ollama.model), [], basis)
             self.store.job_done(job["id"], self.ollama.model)
             return 0
         rendered = "\n\n".join(f"[{r['id'][:8]}] {r['title']}\n{r['content'][:600]}" for r in sources)[:ANSWER_LIMIT]
@@ -304,7 +373,7 @@ class Worker:
             raise ValueError("answer refused by the secret screen")
         # The prompt asks for brevity; this enforces it. A model that ignores the sentence cap gets
         # cut rather than stored at whatever length it chose.
-        self.store.set_answer(q["id"], reply[:ANSWER_CHARS], f"ollama:{model}", [r["id"] for r in sources], basis)
+        self.store.set_answer(q["id"], reply[:ANSWER_CHARS], self.label(model), [r["id"] for r in sources], basis)
         self.store.job_done(job["id"], model)
         self.store.audit("enrichment", "answer", q["namespace"], q["id"], f"{len(sources)} sources, model {model}")
         LOG.info("answer job %s for %s: %d sources, model %s", job["id"][:8], q["namespace"], len(sources), model)
