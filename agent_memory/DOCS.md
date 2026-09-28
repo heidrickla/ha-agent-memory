@@ -23,7 +23,9 @@ stores carries its name as the writer.
 Status is the server's: `memory_store` writes `active`, extraction and session summaries
 write `candidate`. `memory_update` takes the `revision` the caller read and changes nothing
 when the record has moved on; the reply carries the current record. `memory_session_close`
-with an `op_id` answers a replay with the first result.
+with an `op_id` answers a replay from the same client with the same inputs with the first
+result; past `retention_deleted_days` a replay is refused as expired. REST reads need the
+`read` scope, as the MCP tools do.
 
 A namespace in `hubs` is one whose sessions work on other repositories. Its `memory_search`
 and the task match in `memory_project_context` also cover every other repository namespace
