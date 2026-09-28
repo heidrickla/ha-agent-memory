@@ -308,6 +308,21 @@ def test_an_answer_and_its_job_commit_together(store, monkeypatch):
     assert store.get_question(q["id"])["answer"] == "" and store.next_job()["id"] == job["id"]
 
 
+def test_a_no_source_answer_and_its_job_commit_together(store, monkeypatch):
+    q = store.add_question(NS, "which sensor does the kiosk report through", "desk")
+    worker = Worker(store, {"ollama_model": "m"}, ollama=OneModel())
+    store.enqueue("answer", NS, {"question_id": q["id"]})
+    job = store.next_job()
+
+    def broken(*a, **k):
+        raise sqlite3.OperationalError("disk I/O error")
+
+    monkeypatch.setattr(store, "job_done", broken)
+    with pytest.raises(sqlite3.OperationalError):
+        worker.run_job(job)
+    assert store.get_question(q["id"])["answer"] == "" and store.next_job()["id"] == job["id"]
+
+
 def test_a_replay_after_the_receipt_expired_is_refused_not_run(tmp_path):
     app = srv.App({**OPTIONS, "ollama_url": "http://127.0.0.1:9"}, str(tmp_path))
     args = (NS, "Closed long ago.", "claude-code", "s1", "decided to spool", "desktop", True, "op-expired-00001")

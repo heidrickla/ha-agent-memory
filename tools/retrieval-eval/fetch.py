@@ -48,7 +48,7 @@ def token(name: str) -> str:
     try:
         with winreg.OpenKey(winreg.HKEY_CURRENT_USER, "Environment") as key:
             return str(winreg.QueryValueEx(key, name)[0]).strip()
-    except OSError:
+    except FileNotFoundError:  # unset; any other registry failure raises rather than send no token
         return ""
 
 

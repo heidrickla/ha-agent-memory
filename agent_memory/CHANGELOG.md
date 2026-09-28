@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.11.1
+
+- A standing question with no supporting records gets its answer and its job's completion in one transaction.
+
 ## 0.11.0
 
 - REST reads check scope by the MCP rule: `GET /api/bootstrap`, `search`, `get`, `timeline`, `context` and `namespaces` need `read` (or `admin`); a client without it gets 403.

@@ -376,8 +376,9 @@ class Worker:
         sources = self.store.sources_for(q["namespace"], q["question"])
         basis = self.store.basis_for(q["namespace"], q["question"])
         if not sources:
-            self.store.set_answer(q["id"], NOTHING_KNOWN, self.label(self.ollama.model), [], basis)
-            self.store.job_done(job["id"], self.ollama.model)
+            with self.store.transaction():
+                self.store.set_answer(q["id"], NOTHING_KNOWN, self.label(self.ollama.model), [], basis)
+                self.store.job_done(job["id"], self.ollama.model)
             return 0
         rendered = "\n\n".join(f"[{r['id'][:8]}] {r['title']}\n{r['content'][:600]}" for r in sources)[:ANSWER_LIMIT]
         model, reply = self._try_models("answer", lambda m: (self.ollama.answer(q["question"], redact(rendered), m) or "").strip())
