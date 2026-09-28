@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.10.1
+
+- memory_update accepts the revision as a string of digits. A client holding the tool list from before 0.10.0 has no revision property and sends the value as a string; it was refused as not an integer.
+
 ## 0.10.0
 
 - Status is the server's. `memory_store` and the REST store always write `active`; a `status`, `id` or `enrichment` sent with them is ignored. Extraction writes candidates through an internal operation, `Store.store_candidate`, which import uses too. A status outside `active`, `candidate`, `superseded`, `deleted` is refused; `memory_update` moves a record between `candidate` and `active` only.

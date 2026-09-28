@@ -292,6 +292,9 @@ class Memory:
         """Apply `changes` at the revision the caller read. A mismatch returns the current record."""
         if revision is None:
             raise ToolError("revision is required: pass the revision memory_get, memory_search or memory_timeline returned")
+        # A client holding a tool list from before `revision` existed sends it as a string.
+        if isinstance(revision, str) and revision.strip().isdigit():
+            revision = int(revision.strip())
         unknown = sorted(set(changes) - set(UPDATABLE))
         if unknown:
             raise ToolError(f"cannot change {', '.join(unknown)}; changeable: {', '.join(UPDATABLE)}")

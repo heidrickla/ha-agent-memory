@@ -284,6 +284,14 @@ def test_mcp_and_rest_report_a_conflict_with_the_current_revision(http):
     err, unknown = tool(base, "memory_update", {"id": rid, "revision": 2, "changes": {"statuss": "active"}})
     assert err and "cannot change statuss" in unknown["error"]
     assert app.store.get(rid)["content"] == "One."
+    for bad in ("two", True, 2.5, "2.0"):
+        err, refused = tool(base, "memory_update", {"id": rid, "revision": bad, "changes": {"content": "Bad revision."}})
+        assert err and "integer revision" in refused["error"], bad
+    # A client holding the tool list from before revisions sends the number as a string.
+    err, ok = tool(base, "memory_update", {"id": rid, "revision": "2", "changes": {"content": "From a stale schema."}})
+    assert not err and ok["updated"]["revision"] == 3
+    err, clash = tool(base, "memory_update", {"id": rid, "revision": "2", "changes": {"content": "Stale again."}})
+    assert err and clash["revision"] == 3
 
 
 def test_a_database_from_before_revisions_opens_at_revision_one(tmp_path):
