@@ -1,6 +1,6 @@
 # Shared memory for Claude Code and Codex
 
-Status: revision 2, 2026-09-28, after Codex review rounds 1 and 2 (recorded in ha-management `records/svc-agent-memory.md`). Built in agent-memory 0.11.0 and the ha-management hooks of the same day: per-agent tokens (Claude and Codex), receipts bound to the client and every input with tombstones past the retention, one screen for every database write, one transaction per mutation, the bootstrap budget on the wire, relative `path:` anchors resolved against their repository's checkout. The IP client stays until both apps have restarted with the token variables. The advisory duplicate check is deferred until labelled pairs exist.
+Status: revision 2, 2026-09-28, after Codex review rounds 1 to 3 (recorded in ha-management `records/svc-agent-memory.md`). Built in agent-memory 0.11.1 and the ha-management hooks of the same day: per-agent tokens (Claude and Codex), receipts bound to the client and every input with tombstones past the retention, one screen for every database write, one transaction per mutation, the bootstrap budget on the wire, relative `path:` anchors resolved against their repository's checkout. The IP client `desktop` stays configured beside the token clients (owner's decision). The advisory duplicate check is deferred until labelled pairs exist.
 
 Known gaps after the build (2026-09-28):
 - Supersession happens only when a record is created, so a reviewed candidate cannot take over from an older active record.
