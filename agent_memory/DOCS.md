@@ -17,7 +17,13 @@ soft delete kept for `retention_deleted_days`. `memory_export` writes Markdown p
 and one JSONL under `/data/exports`, inside Home Assistant backups.
 
 Clients are listed in the options: a `token_sha256` authenticates by bearer token, an `ip`
-alone by source address. Scopes: read, write, delete, export, admin.
+alone by source address. Scopes: read, write, delete, export, admin. What a token client
+stores carries its name as the writer.
+
+Status is the server's: `memory_store` writes `active`, extraction and session summaries
+write `candidate`. `memory_update` takes the `revision` the caller read and changes nothing
+when the record has moved on; the reply carries the current record. `memory_session_close`
+with an `op_id` answers a replay with the first result.
 
 A namespace in `hubs` is one whose sessions work on other repositories. Its `memory_search`
 and the task match in `memory_project_context` also cover every other repository namespace

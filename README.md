@@ -17,9 +17,9 @@ active until promoted, a job done only after its records are written).
 | Namespaces | `github/<owner>/<repo>` and `gitea/<owner>/<repo>` from git remotes (other owners are refused), `projects/<name>`, `topics/<name>`, `global`, `local/<name>` |
 | Retrieval order | repository, its linked projects, given topics, global; a hub's search and task match then reach every other repository namespace |
 | Ranking | cosine over record embeddings when the encoder answers, FTS5 otherwise ([Embedding retrieval](#embedding-retrieval)) |
-| Budgets | bootstrap 500 tokens, search 750, records 2000, packet 4000 (hard limit 8000); every response reports its estimate and truncation |
-| Auth | per-client bearer token (sha256 in options) or source address; scopes read, write, delete, export, admin |
-| Filtering | credentials, key material, JWTs, URL passwords and the `do-not-store` marker are refused and audited by pattern name |
+| Budgets | bootstrap 500 tokens over the whole response (2,000 bytes), search 750, records 2000, packet 4000 (hard limit 8000); every response reports its estimate and truncation |
+| Auth | per-client bearer token (sha256 in options) or source address; scopes read, write, delete, export, admin; a token client is recorded as the writer |
+| Filtering | every persisted field and queued payload: credentials, key material, JWTs, URL passwords and the `do-not-store` marker are refused and audited by field and pattern name |
 | Page | ingress only, dark: health, namespaces, audit tail |
 
 ## Tools
@@ -30,7 +30,34 @@ active until promoted, a job done only after its records are written).
 `memory_export`, `memory_anchors`, `memory_anchor_report`, `memory_anchor_sweep`. Flow: `bootstrap` → `search` → `get` selected ids, or
 `project_context(namespace, task)` for one bounded packet with a reason per record.
 `bootstrap` lists active records and counts candidates in `candidates_pending`; `memory_timeline`
-lists candidates for review, `memory_update` promotes one, `memory_forget` drops it.
+lists candidates for review with their revisions, `memory_update(id, revision, {status: active})`
+promotes one, `memory_forget` drops it.
+
+## Write protocol
+
+| | |
+|---|---|
+| Status | set by the server: `memory_store` writes `active`; extraction and import write `candidate` through `Store.store_candidate`; session summaries are `candidate`. States `active`, `candidate`, `superseded`, `deleted`; `memory_update` moves `candidate` to `active` and back; only a supersession makes `superseded` and only `memory_forget` makes `deleted` |
+| Writer | a token client's name replaces `agent`; an address client's `agent` is kept |
+| Revision | an integer on every record, advanced by every mutation (content, anchors, evidence, status, supersession, forget, rename). `memory_update(id, revision, changes)` applies only at that revision, anchors and status in the same transaction; a mismatch returns `revision` and `current` (MCP `isError`, REST 409) |
+| Supersede | `supersedes` on a store retires a live active record in the same namespace; never the record itself, never a cycle, and only from an active replacement; checked in the store's transaction |
+| Screen | every persisted string, list and job payload; a URL anchor with userinfo or a credential-named query or fragment parameter is refused; session notes carrying `do-not-store` are refused, and the summary is still stored |
+| Session close | `op_id` (8-64 of `A-Za-z0-9_-`) keeps the result as a receipt in the close's transaction; a replay returns it with `replayed: true`; the id reused for another close is refused (409); receipts are purged with `retention_deleted_days` |
+| Bootstrap | the 500-token budget is 2,000 bytes of the serialized response, envelope included; an item that does not fit is left out, the first included, and `left_out` counts them |
+
+## Anchors
+
+| Anchor | Checked by | Where |
+|---|---|---|
+| `entity:` | the add-on's sweep, every `anchor_sweep_hours`, and `memory_anchor_sweep` | the add-on, against Home Assistant's states through the Supervisor |
+| `path:` | a client that can see the path, through `memory_anchor_report` | the host holding the path |
+| `host:` | a client, through `memory_anchor_report` | any host on the LAN |
+| `url:` | a client, through `memory_anchor_report` | any host that can reach the URL |
+
+Each anchor keeps its last definitive state, `unchecked`, `ok` or `missing`, and `unavailable_since`
+while its checker could not look. A report of `unavailable` keeps the state and files nothing. A
+change between `ok` and `missing` files one observation on the record. A record with a missing anchor
+carries `missing_anchors` in search, get, timeline, bootstrap and project context.
 
 ## Embedding retrieval
 

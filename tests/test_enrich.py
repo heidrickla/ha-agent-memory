@@ -84,7 +84,7 @@ def test_extraction_stores_validated_candidates_once(tmp_path, ollama):
     sent = FakeOllama.seen[0]["messages"][1]["content"]
     assert "[redacted:assignment]" in sent and "hunter2" not in sent  # redacted before it left
     assert FakeOllama.seen[0]["format"] == "json" and FakeOllama.seen[0]["model"] == "test-model"
-    cands = app.store.by_namespace([NS], statuses=("candidate",))
+    cands = [c for c in app.store.by_namespace([NS], statuses=("candidate",)) if c["type"] != "session-summary"]
     assert {c["title"] for c in cands} == {"Loops live in an add-on", "No token on the command line", "s6 hides the Supervisor token", "Fix the six core log errors"}
     assert all(c["agent"] == "ollama:test-model" and c["enrichment"].startswith("extract-v1:") for c in cands)
     assert app.memory.search(NS, "token argv")["hits"] == []  # candidates stay out of search by default
@@ -94,8 +94,8 @@ def test_extraction_stores_validated_candidates_once(tmp_path, ollama):
     job_id = cands[0]["enrichment"].split(":", 1)[1]
     app.store.db.execute("update jobs set status='queued' where id=?", (job_id,))
     assert app.worker.step() is True
-    assert len(app.store.by_namespace([NS], statuses=("candidate",))) == 4 and len(FakeOllama.seen) == 1
-    promoted = app.memory.update(cands[0]["id"], {"status": "active"}, "desk")
+    assert len([c for c in app.store.by_namespace([NS], statuses=("candidate",)) if c["type"] != "session-summary"]) == 4 and len(FakeOllama.seen) == 1
+    promoted = app.memory.update(cands[0]["id"], {"status": "active"}, "desk", cands[0]["revision"])
     assert promoted["updated"]["status"] == "active" and app.memory.search(NS, "add-on desktop")["hits"]
 
 
@@ -110,7 +110,7 @@ def test_malformed_output_is_retried_then_given_up(tmp_path, ollama):
     assert app.store.next_job() is None and app.worker.state()["failed"] == 1
     job = app.store.db.execute("select status, attempts, last_error from jobs").fetchone()
     assert job["status"] == "failed" and job["attempts"] == enrich.MAX_ATTEMPTS and "JSONDecodeError" in job["last_error"]
-    assert app.store.by_namespace([NS], statuses=("candidate",)) == []
+    assert [c for c in app.store.by_namespace([NS], statuses=("candidate",)) if c["type"] != "session-summary"] == []
 
 
 def test_offline_keeps_jobs_and_degrades_health(tmp_path):

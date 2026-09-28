@@ -6,14 +6,22 @@ Tokens are approximated as characters / 4 throughout; every packet reports its e
 
 from __future__ import annotations
 
+import contextlib
 import datetime as dt
 import hashlib
+import itertools
 import json
 import re
 import os
 import sqlite3
 import threading
 import uuid
+
+# The add-on and the tests import modules top-level; the offline eval imports `agent_memory.store`.
+if __package__:
+    from .filters import screen_fields, url_credentials
+else:
+    from filters import screen_fields, url_credentials
 
 TYPES = (
     "architectural-decision",
@@ -42,6 +50,13 @@ TYPE_WEIGHT = {
     "session-summary": 0.6,
 }
 ANCHOR_RE = re.compile(r"^(?:entity|path|host|url):\S.{0,300}$")
+# Lifecycle, owned by the server. A record is created active or candidate; update moves it between those
+# two; only a supersession makes it superseded and only forget makes it deleted.
+STATUSES = ("active", "candidate", "superseded", "deleted")
+CREATE_STATUSES = ("active", "candidate")
+UPDATE_TRANSITIONS = {("candidate", "active"), ("active", "candidate")}
+UPDATABLE = ("title", "content", "type", "confidence", "status", "topics", "project_scopes", "expires_at", "sensitivity", "anchors")
+ANCHOR_STATES = ("ok", "missing", "unavailable")
 SCHEMA = """
 create table if not exists memories (
   id text primary key, created_at text not null, updated_at text not null,
@@ -50,7 +65,12 @@ create table if not exists memories (
   repository text not null default '', commit_sha text not null default '',
   title text not null, content text not null, confidence real not null default 0.8,
   status text not null default 'active', sensitivity text not null default 'internal',
-  supersedes text, expires_at text, deleted_at text, enrichment text not null default ''
+  supersedes text, expires_at text, deleted_at text, enrichment text not null default '',
+  revision integer not null default 1
+);
+create table if not exists receipts (
+  op_id text primary key, at text not null, client text not null, operation text not null,
+  digest text not null, result text not null
 );
 create index if not exists memories_ns on memories(namespace, status);
 create table if not exists audit (
@@ -77,7 +97,7 @@ create table if not exists queries (
 create index if not exists queries_ns on queries(namespace, norm);
 create table if not exists anchors (
   record_id text not null, anchor text not null, last_state text not null default '',
-  last_checked text, primary key (record_id, anchor)
+  last_checked text, unavailable_since text, primary key (record_id, anchor)
 );
 create table if not exists questions (
   id text primary key, created_at text not null, updated_at text not null,
@@ -90,6 +110,15 @@ create unique index if not exists questions_key on questions(namespace, norm);
 create table if not exists embeddings (
   record_id text primary key, digest text not null, model text not null, vector blob not null
 );
+"""
+"""`revision` counts mutations of a record: content, anchors, evidence, status, supersession. `memory_update`
+applies only at the revision the caller read, because `updated_at` has one-second resolution.
+
+`receipts` holds the result of each operation sent with an operation id, so a replay after a lost
+response returns that result instead of acting twice. Only `session_close` takes one.
+
+`anchors.last_state` is the last definitive check (`ok` or `missing`, empty when never checked);
+`unavailable_since` is set while the checker could not look and cleared by the next definitive check.
 """
 """`embeddings` holds one float32 vector per record for embedding retrieval (`embed.py`).
 
@@ -258,6 +287,56 @@ def jaccard(a: frozenset, b: frozenset) -> float:
     return len(a & b) / len(a | b)
 
 
+class Rejected(ValueError):
+    """A write refused by a rule; the message says which and is safe to return."""
+
+
+class Refused(Rejected):
+    """A write whose field screens as a secret or carries the do-not-store marker. Names the field and the
+    pattern, never the text."""
+
+    def __init__(self, field: str, reason: str):
+        super().__init__(f"{reason} in {field}")
+        self.field, self.reason = field, reason
+
+
+class Conflict(Exception):
+    """`update` at a revision that is no longer current; carries the record as it stands."""
+
+    def __init__(self, current: dict):
+        super().__init__(f"revision conflict: the record is at revision {current['revision']}")
+        self.current = current
+
+
+def _strings(name: str, value: object) -> list[str]:
+    if value is None:
+        return []
+    if not isinstance(value, (list, tuple)) or not all(isinstance(v, str) for v in value):
+        # A client with a stale tool schema sends a list as one string; iterating it kept single characters.
+        raise Rejected(f"{name} must be a list of strings, got {type(value).__name__}")
+    return sorted({v.strip() for v in value if v.strip()})
+
+
+def _confidence(value: object) -> float:
+    try:
+        c = float(value)
+    except (TypeError, ValueError) as err:
+        raise Rejected("confidence must be a number from 0 to 1") from err
+    if isinstance(value, bool) or not 0.0 <= c <= 1.0:
+        raise Rejected("confidence must be a number from 0 to 1")
+    return c
+
+
+def _expiry(value: object) -> str | None:
+    if value in (None, ""):
+        return None
+    try:
+        dt.datetime.fromisoformat(str(value))
+    except ValueError as err:
+        raise Rejected("expires_at must be an ISO 8601 date or time") from err
+    return str(value)
+
+
 class Store:
     def __init__(self, path: str):
         self.path = path
@@ -268,9 +347,46 @@ class Store:
         self.db.execute("pragma journal_mode=wal")
         self.db.execute("pragma synchronous=normal")
         self.db.executescript(SCHEMA)
+        self._migrate()
         self.fts = self._index(FTS, "memories_fts", "porter")
         # Set on every write that can change a record's text; the embedding worker waits on it.
         self.changed = threading.Event()
+        self._savepoints = itertools.count()
+
+    def _migrate(self) -> None:
+        """Columns added after a database was created. Existing records start at revision 1."""
+        added = {"memories": ("revision", "integer not null default 1"), "anchors": ("unavailable_since", "text")}
+        for table, (column, decl) in added.items():
+            if column not in {r[1] for r in self.db.execute(f"pragma table_info({table})")}:
+                self.db.execute(f"alter table {table} add column {column} {decl}")
+
+    @contextlib.contextmanager
+    def transaction(self):
+        """One transaction under the store lock; nested use becomes a savepoint inside the outer one."""
+        with self.lock:
+            name = f"sp{next(self._savepoints)}"
+            self.db.execute(f"savepoint {name}")
+            try:
+                yield
+            except BaseException:
+                self.db.execute(f"rollback to {name}")
+                self.db.execute(f"release {name}")
+                raise
+            self.db.execute(f"release {name}")
+
+    def refuse(self, client: str, namespace: str, record_id: str, fields: dict) -> None:
+        """Screen every value about to be persisted, and URL anchors for credentials. A hit is audited
+        by field and pattern name, never the text, and raises Refused. Call it outside a transaction,
+        so the audit row survives the refusal."""
+        hit = screen_fields(fields)
+        anchors = fields.get("anchors") if isinstance(fields.get("anchors"), (list, tuple)) else []
+        for a in anchors:
+            reason = url_credentials(str(a).strip()[4:]) if str(a).strip().startswith("url:") else None
+            if hit is None and reason:
+                hit = ("anchors", reason)
+        if hit:
+            self.audit(client, "rejected", namespace, record_id, f"{hit[0]}: {hit[1]}")
+            raise Refused(*hit)
 
     def _index(self, ddl: str, table: str, tokenizer: str) -> bool:
         """Create the full-text index, or rebuild one made with another tokenizer. False when this
@@ -291,7 +407,13 @@ class Store:
     def _row(self, r: sqlite3.Row) -> dict:
         d = dict(r)
         with self.lock:
-            d["anchors"] = [a[0] for a in self.db.execute("select anchor from anchors where record_id=? order by anchor", (d["id"],))]
+            rows = self.db.execute("select anchor, last_state, last_checked, unavailable_since from anchors where record_id=? order by anchor", (d["id"],)).fetchall()
+        d["anchors"] = [a["anchor"] for a in rows]
+        if rows:
+            d["anchor_states"] = [{"anchor": a["anchor"], "state": a["last_state"] or "unchecked", "checked_at": a["last_checked"], "unavailable_since": a["unavailable_since"]} for a in rows]
+        missing = [a["anchor"] for a in rows if a["last_state"] == "missing"]
+        if missing:
+            d["missing_anchors"] = missing
         d["project_scopes"] = json.loads(d.pop("project_scopes") or "[]")
         d["topics"] = json.loads(d.pop("topics") or "[]")
         d["commit"] = d.pop("commit_sha")
@@ -333,13 +455,14 @@ class Store:
         rec = self.get(rid)
         if rec is None:
             return None
-        with self.lock:
+        self.refuse(client, rec["namespace"], rid, {"quote": quote, "agent": agent, "source_session": source_session})
+        with self.transaction():
             self.db.execute(
                 "insert into evidence(id, record_id, at, stance, quote, agent, source_session) values (?,?,?,?,?,?,?)",
                 (str(uuid.uuid4()), rid, now_iso(), stance, quote.strip()[:1000], agent or client, source_session),
             )
-            self.db.execute("update memories set updated_at=? where id=?", (now_iso(), rid))
-        self.audit(client, stance, rec["namespace"], rid, quote.strip()[:200])
+            self.db.execute("update memories set updated_at=?, revision=revision+1 where id=?", (now_iso(), rid))
+            self.audit(client, stance, rec["namespace"], rid, quote.strip()[:200])
         return self.get(rid)
 
     def evidence(self, rid: str, limit: int = 20) -> list[dict]:
@@ -353,90 +476,153 @@ class Store:
 
     # ------------------------------------------------------------- writes
     def store(self, rec: dict, client: str) -> dict:
-        # Validated before the insert: a refused store must write nothing.
-        self.valid_anchors(rec.get("anchors") or [])
+        """The internal create. `status` must be active or candidate; the service boundary
+        (`mcp.Memory.store_record`) always passes active, and extraction and import go through
+        `store_candidate`. Everything is validated and screened before the transaction, so a refused
+        store writes nothing."""
+        status = rec.get("status") or "active"
+        if status not in CREATE_STATUSES:
+            raise Rejected(f"a record is created {' or '.join(CREATE_STATUSES)}, not {status!r}")
+        typ = rec.get("type") or "repository-fact"
+        if typ not in TYPES:
+            raise Rejected(f"type must be one of {', '.join(TYPES)}")
+        title, content = str(rec.get("title") or "").strip(), str(rec.get("content") or "").strip()
+        if not title or not content:
+            raise Rejected("title and content are required")
+        fields = {
+            "namespace": rec["namespace"],
+            "project_scopes": _strings("project_scopes", rec.get("project_scopes")),
+            "topics": _strings("topics", rec.get("topics")),
+            "type": typ,
+            "agent": str(rec.get("agent") or client),
+            "source_session": str(rec.get("source_session") or ""),
+            "repository": str(rec.get("repository") or ""),
+            "commit": str(rec.get("commit") or ""),
+            "title": title,
+            "content": content,
+            "sensitivity": str(rec.get("sensitivity") or "internal"),
+            "supersedes": str(rec["supersedes"]) if rec.get("supersedes") else None,
+            "expires_at": _expiry(rec.get("expires_at")),
+            "enrichment": str(rec.get("enrichment") or ""),
+            "anchors": self.valid_anchors(rec.get("anchors") or []),
+        }
+        self.refuse(client, str(fields["namespace"]), "", fields)
+        confidence = _confidence(rec.get("confidence") if rec.get("confidence") is not None else 0.8)
         rid = rec.get("id") or str(uuid.uuid4())
         ts = now_iso()
         row = (
             rid,
             ts,
             ts,
-            rec["namespace"],
-            json.dumps(sorted(set(rec.get("project_scopes") or []))),
-            json.dumps(sorted(set(rec.get("topics") or []))),
-            rec.get("type") or "repository-fact",
-            rec.get("agent") or client,
-            rec.get("source_session") or "",
-            rec.get("repository") or "",
-            rec.get("commit") or "",
-            rec["title"].strip(),
-            rec["content"].strip(),
-            float(rec.get("confidence") if rec.get("confidence") is not None else 0.8),
-            rec.get("status") or "active",
-            rec.get("sensitivity") or "internal",
-            rec.get("supersedes"),
-            rec.get("expires_at"),
+            fields["namespace"],
+            json.dumps(fields["project_scopes"]),
+            json.dumps(fields["topics"]),
+            typ,
+            fields["agent"],
+            fields["source_session"],
+            fields["repository"],
+            fields["commit"],
+            title,
+            content,
+            confidence,
+            status,
+            fields["sensitivity"],
+            fields["supersedes"],
+            fields["expires_at"],
             None,
-            rec.get("enrichment") or "",
+            fields["enrichment"],
         )
-        with self.lock:
+        with self.transaction():
             self.db.execute(
-                "insert into memories(id, created_at, updated_at, namespace, project_scopes, topics, type, agent, source_session, repository, commit_sha, title, content, confidence, status, sensitivity, supersedes, expires_at, deleted_at, enrichment) values (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                "insert into memories(id, created_at, updated_at, namespace, project_scopes, topics, type, agent, source_session, repository, commit_sha, title, content, confidence, status, sensitivity, supersedes, expires_at, deleted_at, enrichment, revision) values (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,1)",
                 row,
             )
-            if rec.get("supersedes"):
-                self.db.execute("update memories set status='superseded', updated_at=? where id=? and status='active'", (ts, rec["supersedes"]))
-        self.set_anchors(rid, rec.get("anchors") or [])
-        self.audit(client, "store", rec["namespace"], rid, rec.get("type") or "")
+            if fields["supersedes"]:
+                self._supersede(rid, fields["supersedes"], str(fields["namespace"]), status, ts)
+            self._set_anchors(rid, fields["anchors"])
+            self.audit(client, "store", str(fields["namespace"]), rid, typ)
         self.changed.set()
         return self.get(rid)
+
+    def store_candidate(self, rec: dict, client: str) -> dict:
+        """The internal operation extraction and import write through: always a candidate, never superseding."""
+        if rec.get("supersedes"):
+            raise Rejected("a candidate cannot supersede a record")
+        return self.store({**rec, "status": "candidate"}, client)
+
+    def _supersede(self, new_id: str, target_id: str, namespace: str, new_status: str, ts: str) -> None:
+        """Retire `target_id` in favour of `new_id`, inside the caller's transaction. Refused unless the
+        replacement is active, the target is a different live active record in the same namespace, and
+        the target's own chain of supersessions does not lead back to the replacement."""
+        if new_status != "active":
+            raise Rejected("only an active record can supersede another")
+        if target_id == new_id:
+            raise Rejected("a record cannot supersede itself")
+        target = self.db.execute("select namespace, status, deleted_at, supersedes from memories where id=?", (target_id,)).fetchone()
+        if target is None or target["deleted_at"]:
+            raise Rejected(f"supersedes names no live record: {target_id}")
+        if target["status"] != "active":
+            raise Rejected(f"supersedes names a {target['status']} record; only an active one can be superseded")
+        if target["namespace"] != namespace:
+            raise Rejected("supersedes names a record in another namespace")
+        seen, link = {target_id}, target["supersedes"]
+        while link and link not in seen:
+            if link == new_id:
+                raise Rejected("supersedes would form a cycle")
+            seen.add(link)
+            nxt = self.db.execute("select supersedes from memories where id=?", (link,)).fetchone()
+            link = nxt["supersedes"] if nxt else None
+        self.db.execute("update memories set status='superseded', updated_at=?, revision=revision+1 where id=? and status='active'", (ts, target_id))
 
     @staticmethod
     def valid_anchors(anchors: object) -> list[str]:
         if not isinstance(anchors, (list, tuple)):
             # A client with a stale tool schema sends the list as one string; iterating it
             # validated single characters.
-            raise ValueError(f"anchors must be a list of strings, got {type(anchors).__name__}")
+            raise Rejected(f"anchors must be a list of strings, got {type(anchors).__name__}")
         wanted = sorted({str(a).strip() for a in anchors})
         bad = [a for a in wanted if not ANCHOR_RE.match(a)]
         if bad:
-            raise ValueError(f"anchors must be entity:, path:, host: or url: followed by a value: {bad}")
+            raise Rejected(f"anchors must be entity:, path:, host: or url: followed by a value: {bad}")
         return wanted
 
-    def set_anchors(self, rid: str, anchors: list[str]) -> None:
-        """Replace a record's anchors, keeping the check state of those that stay."""
-        wanted = self.valid_anchors(anchors)
-        with self.lock:
-            if wanted:
-                marks = ",".join("?" for _ in wanted)
-                self.db.execute(f"delete from anchors where record_id=? and anchor not in ({marks})", (rid, *wanted))
-            else:
-                self.db.execute("delete from anchors where record_id=?", (rid,))
-            for a in wanted:
-                self.db.execute("insert or ignore into anchors(record_id, anchor) values (?, ?)", (rid, a))
+    def _set_anchors(self, rid: str, wanted: list[str]) -> None:
+        """Replace a record's anchors, keeping the check state of those that stay. Caller holds the lock."""
+        if wanted:
+            marks = ",".join("?" for _ in wanted)
+            self.db.execute(f"delete from anchors where record_id=? and anchor not in ({marks})", (rid, *wanted))
+        else:
+            self.db.execute("delete from anchors where record_id=?", (rid,))
+        for a in wanted:
+            self.db.execute("insert or ignore into anchors(record_id, anchor) values (?, ?)", (rid, a))
 
     def anchors(self, kind: str) -> list[dict]:
-        """Anchors of one kind on live active records, with their last check."""
+        """Anchors of one kind on live active records, with their last check: `state` is unchecked, ok or
+        missing, and `unavailable_since` is set while the checker could not look."""
         with self.lock:
             rows = self.db.execute(
-                "select a.record_id, a.anchor, a.last_state, a.last_checked from anchors a join memories m on m.id = a.record_id "
+                "select a.record_id, a.anchor, a.last_state, a.last_checked, a.unavailable_since from anchors a join memories m on m.id = a.record_id "
                 "where m.status='active' and m.deleted_at is null and a.anchor like ? order by a.record_id, a.anchor",
                 (kind + ":%",),
             ).fetchall()
-        return [dict(r) for r in rows]
+        return [dict(r, state=r["last_state"] or "unchecked") for r in rows]
 
     def report_anchor(self, rid: str, anchor: str, state: str, client: str) -> dict:
-        """Record one check. Evidence is filed only on a transition, so a sweep repeated every
-        few hours does not pile contradictions onto one record."""
-        if state not in ("ok", "missing"):
-            raise ValueError("state must be ok or missing")
+        """Record one check. `unavailable` means the checker could not look: it keeps the last definitive
+        state and files nothing. Evidence is filed only on a transition between ok and missing, so a
+        sweep repeated every few hours does not pile contradictions onto one record."""
+        if state not in ANCHOR_STATES:
+            raise Rejected(f"state must be one of {', '.join(ANCHOR_STATES)}")
         with self.lock:
-            row = self.db.execute("select last_state from anchors where record_id=? and anchor=?", (rid, anchor)).fetchone()
+            row = self.db.execute("select last_state, unavailable_since from anchors where record_id=? and anchor=?", (rid, anchor)).fetchone()
         if row is None:
-            raise ValueError(f"record {rid} has no anchor {anchor}")
-        before = row[0]
+            raise Rejected(f"record {rid} has no anchor {anchor}")
+        before = row["last_state"]
         with self.lock:
-            self.db.execute("update anchors set last_state=?, last_checked=? where record_id=? and anchor=?", (state, now_iso(), rid, anchor))
+            if state == "unavailable":
+                self.db.execute("update anchors set unavailable_since=coalesce(unavailable_since, ?) where record_id=? and anchor=?", (now_iso(), rid, anchor))
+                return {"record_id": rid, "anchor": anchor, "state": state, "was": before or "unchecked", "filed": ""}
+            self.db.execute("update anchors set last_state=?, last_checked=?, unavailable_since=null where record_id=? and anchor=?", (state, now_iso(), rid, anchor))
         filed = ""
         if state == "missing" and before != "missing":
             self.corroborate(rid, f"anchor {anchor} no longer resolves", "contradicts", client)
@@ -446,42 +632,73 @@ class Store:
             filed = "corroborates"
         return {"record_id": rid, "anchor": anchor, "state": state, "was": before or "unchecked", "filed": filed}
 
-    def update(self, rid: str, changes: dict, client: str) -> dict | None:
-        if "anchors" in changes:
-            if self.get(rid) is None:
-                return None
-            self.set_anchors(rid, list(changes["anchors"] or []))
-        allowed = {"title", "content", "type", "confidence", "status", "topics", "project_scopes", "expires_at", "sensitivity"}
-        sets, vals = [], []
+    def update(self, rid: str, changes: dict, client: str, revision: int) -> dict | None:
+        """Apply `changes` only if the record is still at `revision`, in one transaction with its anchors
+        and status. Every change advances the revision and `updated_at`. Raises Conflict with the current
+        record on a mismatch; None when there is no live record."""
+        unknown = sorted(set(changes) - set(UPDATABLE))
+        if unknown:
+            raise Rejected(f"cannot change {', '.join(unknown)}; changeable: {', '.join(UPDATABLE)}")
+        if not changes:
+            raise Rejected("no changes given")
+        if isinstance(revision, bool) or not isinstance(revision, int):
+            raise Rejected("revision must be the integer revision the record was read at")
+        values: dict = {}
         for k, v in changes.items():
-            if k not in allowed:
-                continue
             if k in ("topics", "project_scopes"):
-                v = json.dumps(sorted(set(v or [])))
-            sets.append(f"{k}=?")
-            vals.append(v)
-        if not sets:
-            return self.get(rid)
-        sets.append("updated_at=?")
-        vals += [now_iso(), rid]
-        with self.lock:
-            cur = self.db.execute(f"update memories set {', '.join(sets)} where id=? and deleted_at is null", vals)
-        if cur.rowcount == 0:
+                values[k] = json.dumps(_strings(k, v))
+            elif k == "anchors":
+                values[k] = self.valid_anchors(v or [])
+            elif k == "confidence":
+                values[k] = _confidence(v)
+            elif k == "expires_at":
+                values[k] = _expiry(v)
+            elif k == "type":
+                if v not in TYPES:
+                    raise Rejected(f"type must be one of {', '.join(TYPES)}")
+                values[k] = v
+            elif k == "status":
+                if v not in STATUSES:
+                    raise Rejected(f"status must be one of {', '.join(STATUSES)}")
+                values[k] = v
+            elif k in ("title", "content"):
+                values[k] = str(v or "").strip()
+                if not values[k]:
+                    raise Rejected(f"{k} cannot be empty")
+            else:
+                values[k] = str(v or "")
+        current = self.get(rid)
+        if current is None:
             return None
-        self.audit(client, "update", record_id=rid, detail=",".join(sorted(k for k in changes if k in allowed)))
+        self.refuse(client, current["namespace"], rid, changes)
+        with self.transaction():
+            row = self.db.execute("select status, revision from memories where id=? and deleted_at is null", (rid,)).fetchone()
+            if row is None:
+                return None
+            if row["revision"] != revision:
+                raise Conflict(self.get(rid) or current)
+            if "status" in values and values["status"] != row["status"] and (row["status"], values["status"]) not in UPDATE_TRANSITIONS:
+                raise Rejected(f"status cannot move from {row['status']} to {values['status']} by update")
+            sets = [f"{k}=?" for k in values if k != "anchors"] + ["updated_at=?", "revision=revision+1"]
+            vals = [v for k, v in values.items() if k != "anchors"] + [now_iso(), rid, revision]
+            cur = self.db.execute(f"update memories set {', '.join(sets)} where id=? and revision=? and deleted_at is null", vals)
+            if cur.rowcount == 0:
+                raise Conflict(self.get(rid) or current)
+            if "anchors" in values:
+                self._set_anchors(rid, values["anchors"])
+            self.audit(client, "update", current["namespace"], rid, ",".join(sorted(values)))
         self.changed.set()
         return self.get(rid)
 
     def forget(self, rid: str, client: str, hard: bool = False) -> bool:
-        with self.lock:
+        with self.transaction():
             if hard:
                 cur = self.db.execute("delete from memories where id=?", (rid,))
             else:
-                cur = self.db.execute("update memories set deleted_at=?, status='deleted' where id=? and deleted_at is null", (now_iso(), rid))
+                cur = self.db.execute("update memories set deleted_at=?, status='deleted', revision=revision+1 where id=? and deleted_at is null", (now_iso(), rid))
             if cur.rowcount:
                 self.db.execute("delete from embeddings where record_id=?", (rid,))
-        if cur.rowcount:
-            self.audit(client, "forget_hard" if hard else "forget", record_id=rid)
+                self.audit(client, "forget_hard" if hard else "forget", record_id=rid)
         return bool(cur.rowcount)
 
     def purge(self, deleted_days: int) -> int:
@@ -492,6 +709,8 @@ class Store:
             self.db.execute("delete from embeddings where record_id not in (select id from memories where deleted_at is null)")
             # Queries age out on the same clock. They are a demand signal, not a record.
             self.db.execute("delete from queries where at < ?", (cutoff,))
+            # A spooled close is replayed within days; a receipt older than the retention answers nothing.
+            self.db.execute("delete from receipts where at < ?", (cutoff,))
         return cur.rowcount
 
     def put_embedding(self, rid: str, digest: str, model: str, vector: bytes) -> int:
@@ -649,10 +868,11 @@ class Store:
 
     # ------------------------------------------------------------- reads
     def get(self, rid: str, include_deleted: bool = False) -> dict | None:
-        r = self.db.execute("select * from memories where id=?", (rid,)).fetchone()
-        if not r or (r["deleted_at"] and not include_deleted):
-            return None
-        return self._row(r)
+        with self.lock:
+            r = self.db.execute("select * from memories where id=?", (rid,)).fetchone()
+            if not r or (r["deleted_at"] and not include_deleted):
+                return None
+            return self._row(r)
 
     def _live(self, statuses: tuple[str, ...]) -> str:
         marks = ",".join("?" for _ in statuses)
@@ -740,7 +960,8 @@ class Store:
             self.db.execute("begin")
             try:
                 for table, column in (("memories", "namespace"), ("memories", "repository"), ("jobs", "namespace"), ("queries", "namespace")):
-                    cur = self.db.execute(f"update {table} set {column} = ? || substr({column}, ?) where substr({column}, 1, ?) = ?", (new, n + 1, n, old))
+                    bump = ", revision = revision + 1" if table == "memories" else ""
+                    cur = self.db.execute(f"update {table} set {column} = ? || substr({column}, ?){bump} where substr({column}, 1, ?) = ?", (new, n + 1, n, old))
                     moved[f"{table}.{column}"] = cur.rowcount
                 cur = self.db.execute("update or ignore questions set namespace = ? || substr(namespace, ?) where substr(namespace, 1, ?) = ?", (new, n + 1, n, old))
                 moved["questions.namespace"] = cur.rowcount
@@ -773,11 +994,30 @@ class Store:
                 self.db.execute("insert into memories_fts(memories_fts) values ('rebuild')")
 
     # ------------------------------------------------------------- jobs
-    def enqueue(self, kind: str, namespace: str, payload: dict) -> str:
+    def enqueue(self, kind: str, namespace: str, payload: dict, client: str = "system") -> str:
+        """Queue a job. Its payload is persisted, so it passes the same screen as a record."""
+        self.refuse(client, namespace, "", {f"payload.{k}": v for k, v in payload.items()})
         jid = str(uuid.uuid4())
         with self.lock:
             self.db.execute("insert into jobs(id, created_at, kind, namespace, payload) values (?,?,?,?,?)", (jid, now_iso(), kind, namespace, json.dumps(payload)))
         return jid
+
+    # ------------------------------------------------------------- receipts
+    def receipt(self, op_id: str) -> dict | None:
+        with self.lock:
+            r = self.db.execute("select * from receipts where op_id=?", (op_id,)).fetchone()
+        if r is None:
+            return None
+        d = dict(r)
+        d["result"] = json.loads(d["result"])
+        return d
+
+    def put_receipt(self, op_id: str, client: str, operation: str, digest: str, result: dict) -> None:
+        with self.lock:
+            self.db.execute(
+                "insert into receipts(op_id, at, client, operation, digest, result) values (?,?,?,?,?,?)",
+                (op_id, now_iso(), client, operation, digest, json.dumps(result)),
+            )
 
     def next_job(self) -> dict | None:
         r = self.db.execute("select * from jobs where status='queued' order by created_at limit 1").fetchone()

@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.10.0
+
+- Status is the server's. `memory_store` and the REST store always write `active`; a `status`, `id` or `enrichment` sent with them is ignored. Extraction writes candidates through an internal operation, `Store.store_candidate`, which import uses too. A status outside `active`, `candidate`, `superseded`, `deleted` is refused; `memory_update` moves a record between `candidate` and `active` only.
+- A client that authenticates by token is recorded as the writer: its name replaces any `agent` in a store, a session close or a corroboration. A client identified by address keeps the `agent` it sends.
+- Session summaries are stored as `candidate`, so they stay out of bootstrap, default search and standing answers until promoted, and count in `candidates_pending`.
+- The bootstrap budget (500 tokens, 2,000 bytes) covers the whole serialized response. An item that does not fit is left out, the first included, and `left_out` counts them.
+- Every persisted field is screened, not only title and content: topics, scopes, anchors, repository, commit, agent, source session, sensitivity, evidence, and queued job payloads. A URL anchor with userinfo or a credential-named query or fragment parameter is refused. Session notes carrying `do-not-store` are refused, not redacted: the summary is stored and nothing is queued (`enrichment: refused`, `notes_refused`). Refusals are audited by field and pattern name.
+- Integer `revision` on every record, advanced by every mutation: content, anchors, evidence, status, supersession, forget, namespace rename. `memory_update` requires the revision the caller read and applies `UPDATE ... WHERE id=? AND revision=?` with its anchor and status changes in one transaction; a mismatch changes nothing and returns the current record and revision (MCP `isError`, REST 409). Unknown change keys are refused. Existing rows open at revision 1.
+- `supersedes` is checked in the store's transaction: the target must be a live active record in the same namespace, not the record itself and not in a supersession cycle, and the replacement must be active. A refused supersession stores nothing.
+- Anchors keep their last definitive state (`unchecked`, `ok`, `missing`) and `unavailable_since` separately. A failed entity sweep marks entity anchors unavailable and files nothing; `memory_anchor_report` accepts `unavailable`. A record with a missing anchor carries `missing_anchors` in search, get, timeline, bootstrap and project context, and search's `why` names it.
+- `memory_session_close` takes `op_id`. The result is kept as a receipt in the same transaction as the close, a replay of the id returns it with `replayed: true`, and the id reused for a different close is refused (409). Receipts are purged with `retention_deleted_days`.
+- `memory_get` returns `revision` and `anchor_states`; search and timeline items return `revision`.
+
 ## 0.9.0
 
 - Embedding retrieval. With `embed_url` set, `memory_search` and the task match in `memory_project_context` rank by cosine alone over every live record in the same scopes and hub reach as full-text search, whenever the encoder answers and every one of those records has a current vector. Otherwise they answer from FTS5 exactly as before. Responses carry `ranking`: `cosine` or `fts`.

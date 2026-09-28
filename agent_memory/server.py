@@ -6,13 +6,15 @@ One HTTP server carries three things: the MCP endpoint (`POST /mcp`, JSON-RPC ov
 streamable HTTP with JSON responses), a REST mirror of the same tools (`/api/...`) for
 scripts, and the admin page plus `/health`. Clients authenticate by a bearer token whose
 sha256 is in the options, or by source address for clients listed with an `ip`; each
-client carries scopes (read, write, delete, export, admin). Standard library only.
+client carries scopes (read, write, delete, export, admin). A client with a token is identified
+by name: what it writes carries that name as `agent`, whatever the request says. Standard library only.
 """
 
 from __future__ import annotations
 
 import argparse
 import hashlib
+import hmac
 import json
 import logging
 import os
@@ -44,19 +46,21 @@ class Auth:
     def __init__(self, clients: list[dict]):
         self.clients = clients or []
 
-    def identify(self, header: str | None, peer_ip: str) -> tuple[str, set[str]] | None:
+    def identify(self, header: str | None, peer_ip: str) -> tuple[str, set[str], bool] | None:
+        """(name, scopes, by_token). A bearer token must match a client's hash; with no token, a client
+        listed by `ip` alone matches the source address. An unknown token never falls back to the address."""
         token = ""
         if header and header.lower().startswith("bearer "):
             token = header[7:].strip()
         if token:
             digest = hashlib.sha256(token.encode()).hexdigest()
             for c in self.clients:
-                if c.get("token_sha256") and c["token_sha256"].lower() == digest:
-                    return c["name"], set(c.get("scopes") or ["read"])
+                if c.get("token_sha256") and hmac.compare_digest(c["token_sha256"].lower(), digest):
+                    return c["name"], set(c.get("scopes") or ["read"]), True
             return None
         for c in self.clients:
             if c.get("ip") and c["ip"] == peer_ip and not c.get("token_sha256"):
-                return c["name"], set(c.get("scopes") or ["read"])
+                return c["name"], set(c.get("scopes") or ["read"]), False
         return None
 
 
@@ -157,7 +161,7 @@ def make_handler(app: App):
             raw = self.rfile.read(length) if length else b""
             return json.loads(raw or b"{}")
 
-        def _client(self) -> tuple[str, set[str]] | None:
+        def _client(self) -> tuple[str, set[str], bool] | None:
             peer = self.client_address[0]
             ident = app.auth.identify(self.headers.get("Authorization"), peer)
             if ident is None:
@@ -192,7 +196,7 @@ def make_handler(app: App):
             else:
                 self._send(404, b"not found\n", "text/plain; charset=utf-8")
 
-        def _api_get(self, path: str, q: dict, ident: tuple[str, set[str]]) -> None:
+        def _api_get(self, path: str, q: dict, ident: tuple[str, set[str], bool]) -> None:
             one = {k: v[0] for k, v in q.items()}
             try:
                 if path == "/api/bootstrap":
@@ -219,7 +223,7 @@ def make_handler(app: App):
             if not ident:
                 self._json(401, {"error": "unknown client"})
                 return
-            name, scopes = ident
+            name, scopes, verified = ident
             try:
                 body = self._body()
             except ValueError:
@@ -227,7 +231,7 @@ def make_handler(app: App):
                 return
             if path == "/mcp":
                 messages = body if isinstance(body, list) else [body]
-                replies = [r for r in (mcp.jsonrpc(app.memory, m, name, scopes, app.export_dir) for m in messages if isinstance(m, dict)) if r]
+                replies = [r for r in (mcp.jsonrpc(app.memory, m, name, scopes, app.export_dir, verified) for m in messages if isinstance(m, dict)) if r]
                 if not replies:
                     self._send(202, b"")
                     return
@@ -241,9 +245,9 @@ def make_handler(app: App):
                     self._json(403, {"error": f"client {name!r} lacks the {needed!r} scope"})
                 else:
                     try:
-                        self._json(200, mcp.call_tool(app.memory, tool, body, name, app.export_dir))
+                        self._json(200, mcp.call_tool(app.memory, tool, body, name, app.export_dir, verified))
                     except (mcp.ToolError, KeyError, ValueError, TypeError) as err:
-                        self._json(400, {"error": str(err)})
+                        self._json(err.status if isinstance(err, mcp.ToolError) else 400, mcp.error_body(err))
             else:
                 self._send(404, b"not found\n", "text/plain; charset=utf-8")
 

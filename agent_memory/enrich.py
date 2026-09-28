@@ -23,7 +23,7 @@ import urllib.parse
 import urllib.request
 
 from filters import redact, screen
-from store import TYPES, Store
+from store import TYPES, Rejected, Store
 
 LOG = logging.getLogger("agent-memory.enrich")
 PROMPT_VERSION = "extract-v1"
@@ -334,23 +334,20 @@ class Worker:
 
         model, reply = self._try_models("extract", extract_with)
         candidates = parse_candidates(reply)
+        stored = 0
         for c in candidates:
-            self.store.store(
-                {
-                    **c,
-                    "namespace": job["namespace"],
-                    "status": "candidate",
-                    "agent": self.label(model),
-                    "source_session": payload.get("session", ""),
-                    "enrichment": tag,
-                    "supersedes": None,
-                },
-                client="enrichment",
-            )
+            try:
+                self.store.store_candidate(
+                    {**c, "namespace": job["namespace"], "agent": self.label(model), "source_session": payload.get("session", ""), "enrichment": tag},
+                    client="enrichment",
+                )
+                stored += 1
+            except Rejected as err:  # one refused candidate costs itself, not the job
+                LOG.warning("extract job %s: candidate refused: %s", job["id"][:8], err)
         self.store.job_done(job["id"], model)
-        self.store.audit("enrichment", "extract", job["namespace"], payload.get("summary_id", ""), f"{len(candidates)} candidates, model {model}")
-        LOG.info("extract job %s for %s: %d candidates, model %s", job["id"][:8], job["namespace"], len(candidates), model)
-        return len(candidates)
+        self.store.audit("enrichment", "extract", job["namespace"], payload.get("summary_id", ""), f"{stored} candidates, model {model}")
+        LOG.info("extract job %s for %s: %d candidates, model %s", job["id"][:8], job["namespace"], stored, model)
+        return stored
 
     def enqueue_stale(self) -> dict | None:
         """Queue the most overdue standing answer, if any, and hand the job straight back."""

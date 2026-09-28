@@ -4,6 +4,7 @@ The audit log records the pattern's name, never the matched text."""
 from __future__ import annotations
 
 import re
+from urllib.parse import parse_qsl, urlsplit
 
 DO_NOT_STORE = "do-not-store"
 PATTERNS = {
@@ -41,3 +42,43 @@ def redact(text: str) -> str:
     for name, pattern in PATTERNS.items():
         out = pattern.sub(f"[redacted:{name}]", out)
     return out
+
+
+def screen_value(value: object) -> str | None:
+    """`screen` over a string, or over every string inside a list, tuple or dict."""
+    if isinstance(value, str):
+        return screen(value)
+    if isinstance(value, dict):
+        value = list(value.values())
+    if isinstance(value, (list, tuple)):
+        for item in value:
+            reason = screen_value(item)
+            if reason:
+                return reason
+    return None
+
+
+def screen_fields(fields: dict) -> tuple[str, str] | None:
+    """(field, reason) for the first persisted field that screens, else None."""
+    for name, value in fields.items():
+        reason = screen_value(value)
+        if reason:
+            return name, reason
+    return None
+
+
+CREDENTIAL_PARAM = re.compile(r"(?i)(token|secret|passw|pwd|api[_-]?key|access[_-]?key|auth|signature|\bsig\b|credential|session)")
+
+
+def url_credentials(url: str) -> str | None:
+    """Why a URL anchor carries a credential: userinfo, or a query or fragment parameter named like one."""
+    try:
+        parts = urlsplit(url)
+        if parts.username is not None or parts.password is not None:
+            return "url_credentials"
+    except ValueError:
+        return "url_unparseable"
+    for part in (parts.query, parts.fragment):
+        if any(CREDENTIAL_PARAM.search(key) for key, _ in parse_qsl(part, keep_blank_values=True)):
+            return "url_credential_parameter"
+    return None

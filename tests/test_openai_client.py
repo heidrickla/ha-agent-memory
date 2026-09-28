@@ -132,7 +132,7 @@ def test_both_job_kinds_run_through_a_v1_server(tmp_path, v1, caplog):
     assert closed["enrichment"] == "queued"
     with caplog.at_level("INFO", logger="agent-memory.enrich"):
         assert app.worker.step() is True
-    cands = app.store.by_namespace([NS], statuses=("candidate",))
+    cands = [c for c in app.store.by_namespace([NS], statuses=("candidate",)) if c["type"] != "session-summary"]
     assert [c["title"] for c in cands] == ["One model per GPU"]
     assert cands[0]["agent"] == "openai:bonsai2-memory", "the record must name the API and the model that served"
     assert any("extract job" in r.getMessage() and "bonsai2-memory" in r.getMessage() for r in caplog.records)

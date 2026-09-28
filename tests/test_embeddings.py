@@ -281,7 +281,7 @@ def test_an_edited_record_is_stale_until_it_is_embedded_again(tmp_path, enc):
     before = vectors(app)[rid]
     assert app.memory.search(NS, "zebra")["ranking"] == "cosine"
     app.store.changed.clear()
-    app.memory.update(rid, {"content": "zebra two, edited"}, "desk")
+    app.memory.update(rid, {"content": "zebra two, edited"}, "desk", app.store.get(rid)["revision"])
     assert app.store.changed.is_set(), "an edit wakes the worker"
     assert app.memory.search(NS, "zebra")["ranking"] == "fts", "a stale vector is not ranked"
     assert [p[0] for p in app.indexer.pending(app.encoder.identity)] == [rid]
@@ -289,7 +289,7 @@ def test_an_edited_record_is_stale_until_it_is_embedded_again(tmp_path, enc):
     after = vectors(app)[rid]
     assert after["digest"] != before["digest"] and after["vector"] != before["vector"]
     assert app.memory.search(NS, "zebra")["ranking"] == "cosine"
-    app.memory.update(rid, {"confidence": 0.9}, "desk")
+    app.memory.update(rid, {"confidence": 0.9}, "desk", app.store.get(rid)["revision"])
     assert app.indexer.pending(app.encoder.identity) == [], "a change that leaves the text alone leaves the vector current"
 
 

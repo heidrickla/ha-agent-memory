@@ -99,7 +99,7 @@ def test_an_edited_source_makes_the_answer_stale_without_a_model(store):
     drain(store, FakeOllama())
     assert store.find_question([NS], QUESTION)["stale"] is False
 
-    store.update(rid, {"content": "The HA VM was moved to ESXi-Prod-3."}, "desk")
+    store.update(rid, {"content": "The HA VM was moved to ESXi-Prod-3."}, "desk", store.get(rid)["revision"])
     q = store.find_question([NS], QUESTION)
     assert q["stale"] is True, "an edited source must move the basis"
     assert q["answer"], "the old answer is still readable; it is labelled, not deleted"
@@ -117,7 +117,7 @@ def test_a_stale_answer_says_so_when_read(store):
     rid = record(store, "The HA VM lives on ESXi-Prod-5", "Prod-5 carries the HA VM.")
     store.add_question(NS, QUESTION, "desk")
     drain(store, FakeOllama())
-    store.update(rid, {"content": "Moved to Prod-3."}, "desk")
+    store.update(rid, {"content": "Moved to Prod-3."}, "desk", store.get(rid)["revision"])
     out = mcp_mod.Memory(store, OPTIONS).answer(NS, QUESTION)
     assert out["stale"] is True
     assert "changed since" in out["why"]
@@ -127,7 +127,7 @@ def test_the_worker_rewrites_a_stale_answer(store):
     rid = record(store, "The HA VM lives on ESXi-Prod-5", "Prod-5 carries the HA VM.")
     store.add_question(NS, QUESTION, "desk")
     drain(store, FakeOllama("On Prod-5."))
-    store.update(rid, {"content": "Moved to ESXi-Prod-3 on 2026-09-22."}, "desk")
+    store.update(rid, {"content": "Moved to ESXi-Prod-3 on 2026-09-22."}, "desk", store.get(rid)["revision"])
     drain(store, FakeOllama("On Prod-3."))
     q = store.find_question([NS], QUESTION)
     assert q["answer"] == "On Prod-3." and q["stale"] is False

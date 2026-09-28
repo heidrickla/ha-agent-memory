@@ -205,7 +205,7 @@ def test_anchors_are_stored_validated_and_replaced(store):
         store.store(rec(anchors=["nope"]), "desk")
     assert store.stats()["memories"] == before, "a refused store writes nothing"
     store.report_anchor(r["id"], "entity:sensor.a", "missing", "sweep")
-    store.update(r["id"], {"anchors": ["entity:sensor.a", "host:10.0.0.1"]}, "desk")
+    store.update(r["id"], {"anchors": ["entity:sensor.a", "host:10.0.0.1"]}, "desk", store.get(r["id"])["revision"])
     assert store.get(r["id"])["anchors"] == ["entity:sensor.a", "host:10.0.0.1"]
     kept = [a for a in store.anchors("entity") if a["record_id"] == r["id"]]
     assert kept == [dict(kept[0], anchor="entity:sensor.a", last_state="missing")], "an anchor that stays keeps its state"
@@ -238,7 +238,7 @@ def test_anchor_sweep_checks_entities_and_trusts_no_failed_read(memory, store):
         raise OSError("down")
 
     memory.entity_ids = broken
-    assert memory.anchor_sweep("sweep") == {"checked": 0, "missing": 0, "filed": 0, "could_not_check": "OSError"}
+    assert memory.anchor_sweep("sweep") == {"checked": 0, "missing": 0, "filed": 0, "unavailable": 2, "could_not_check": "OSError"}
     assert store.get(here["id"])["refutation_count"] == 0, "an unreadable source is not evidence"
 
 
