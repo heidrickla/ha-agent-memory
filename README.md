@@ -50,7 +50,7 @@ promotes one, `memory_forget` drops it.
 | Anchor | Checked by | Where |
 |---|---|---|
 | `entity:` | the add-on's sweep, every `anchor_sweep_hours`, and `memory_anchor_sweep` | the add-on, against Home Assistant's states through the Supervisor |
-| `path:` | a client that can see the path, through `memory_anchor_report` | the host holding the path |
+| `path:` | a client that can see the path, through `memory_anchor_report`; on desktop, ha-management's `tools/memory_anchor_sweep.py --hook` at every Claude Code SessionStart | the host holding the path |
 | `host:` | a client, through `memory_anchor_report` | any host on the LAN |
 | `url:` | a client, through `memory_anchor_report` | any host that can reach the URL |
 
