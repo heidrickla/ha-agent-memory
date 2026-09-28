@@ -1,6 +1,15 @@
 # Shared memory for Claude Code and Codex
 
-Status: revision 2, 2026-09-28, after Codex review round 1 (12 findings, recorded in ha-management `records/svc-agent-memory.md`). Not built. Decisions marked OPEN are the owner's.
+Status: revision 2, 2026-09-28, after Codex review round 1 (12 findings, recorded in ha-management `records/svc-agent-memory.md`). Server and hook changes built in agent-memory 0.10.1 and the hook at ha-management `7a0ba6e` (2026-09-28). Client token wiring waits for the owner's approval; the IP client is still in place. The advisory duplicate check is deferred until labelled pairs exist. Decisions marked OPEN are the owner's.
+
+Known gaps after the build (2026-09-28):
+- Supersession happens only when a record is created, so a reviewed candidate cannot take over from an older active record.
+- Every closed session adds a candidate summary, so candidates accumulate until someone reviews them (Open 1).
+- Whole-response budgeting shows 5 items and leaves 11 out for ha-agent-memory's bootstrap at 500 tokens (2,000 bytes).
+- No per-field length limits: an oversized title is stored, it just never fits bootstrap.
+- A relative `path:` anchor is checked against the session's working directory, so it reads missing from other repositories and files refutations. On 2026-09-28 two global constraints fell to effective confidence 0.001 and 0.015 this way; their anchors were rewritten as absolute paths.
+- Search, get and project-context packing still admit their first item whatever its size.
+- Tokens as user environment variables are readable by every process, both agents' shells included.
 
 Goal (the owner, 2026-09-28): one memory both agents read and write, "reads and writes through an mcp server that queues changes or something". agent-memory already is that server for part of the job; this document covers what it must change and add before each agent's own memory can be switched off.
 
