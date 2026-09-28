@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.7.1
+
+- The answer request sets `think: false`, as extraction already did. Without a `format` a thinking model still thinks until prompt plus output fill the context. On the Ollama service's 4096-token default, qwen3.5:9b returned no content on 36 of 54 answers (`done_reason: length`); live, 5 of 7 answer jobs hit an empty reply and one gave up after 5 attempts. With thinking off: 0 of 54 empty.
+- The add-on log names the model that served each extract and answer job. Records and audit already did.
+- `ollama_models` has a translation, and `ollama_model` is described as the default for every job kind.
+- Measured chain, set in the options: extract `qwen3.5:9b` then `ornith:9b`; answer `ornith:9b` then `granite4.1:8b`.
+
 ## 0.7.0
 
 - `namespace_renames` option: a list of `{from, to}` owner prefixes (`gitea/example/` to `gitea/heidrickla/`) applied at start to records, their `repository`, jobs, queries and standing questions. Idempotent; one `rename-namespaces` audit row per move that changed something; a question already under the new namespace keeps that copy.

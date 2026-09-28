@@ -57,10 +57,15 @@ of messy notes; answering writes four sentences of prose. Without the option the
 
 ```yaml
 ollama_models:
-  - "extract:needle"
   - "extract:qwen3.5:9b"
-  - "answer:qwen3.5:9b"
+  - "extract:ornith:9b"
+  - "answer:ornith:9b"
+  - "answer:granite4.1:8b"
 ```
+
+The chain above was measured on 2026-09-28 (7 real notes, 18 frozen questions, 3 runs). Both
+requests set `think: false`: a thinking model fills Ollama's 4096-token default context before it
+writes the reply.
 
 The chain is also the failure path: a model missing from the host, or one whose reply will not
 parse, costs the next model rather than the job. The configured default always ends the chain, and

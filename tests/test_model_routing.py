@@ -59,11 +59,8 @@ def options(**over):
     return o
 
 
-def test_the_extract_request_turns_thinking_off(monkeypatch):
-    """A thinking model under `format: json` spends its budget thinking and returns empty content:
-    measured two failures in three from qwen3.5:9b, `done_reason: length`, 2048-3585 eval tokens,
-    zero characters. Raising the token budget made it worse. The request has to say so, and the
-    assertion is on the bytes actually sent rather than on the source that builds them."""
+def _sent_body(monkeypatch, call) -> dict:
+    """The request body a client call actually puts on the wire."""
     sent = {}
 
     class Reply:
@@ -82,9 +79,48 @@ def test_the_extract_request_turns_thinking_off(monkeypatch):
 
     monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
     monkeypatch.setattr(json, "load", lambda fh: json.loads(fh.read().decode()))
-    Ollama("http://x", "m").extract("ns", "notes")
+    call(Ollama("http://x", "m"))
+    return sent
+
+
+def test_the_extract_request_turns_thinking_off(monkeypatch):
+    """A thinking model under `format: json` spends its budget thinking and returns empty content:
+    measured two failures in three from qwen3.5:9b, `done_reason: length`, 2048-3585 eval tokens,
+    zero characters. Raising the token budget made it worse. The request has to say so, and the
+    assertion is on the bytes actually sent rather than on the source that builds them."""
+    sent = _sent_body(monkeypatch, lambda o: o.extract("ns", "notes"))
     assert sent.get("think") is False, "thinking must be off or the reply comes back empty"
     assert sent.get("format") == "json"
+
+
+def test_the_answer_request_turns_thinking_off(monkeypatch):
+    """The answer path sets no `format`, so it was left thinking. Thinking still fills the context:
+    on the service's 4096-token default, qwen3.5:9b answering from about 1000 tokens of records
+    thought until prompt plus output reached 4096 and returned zero characters (`done_reason:
+    length`). Live, 5 of 7 answer jobs hit an empty reply and one gave up after 5 attempts."""
+    sent = _sent_body(monkeypatch, lambda o: o.answer("which host", "records"))
+    assert sent.get("think") is False, "thinking must be off or the answer comes back empty"
+    assert "format" not in sent, "an answer is prose; a JSON format would change what comes back"
+
+
+def test_the_log_names_the_model_that_served_each_kind(store, caplog):
+    """Records and audit named the model, the add-on log did not, so which model served a job could
+    not be read where an operator looks first."""
+    fleet = Fleet({"missing": urllib.error.URLError("model not found"), "prose": "Prod-5 carries the HA VM.", "default-model": GOOD_JSON})
+    w = Worker(store, options(ollama_models={"extract": ["missing"], "answer": ["prose"]}), ollama=fleet)
+    store.enqueue("extract", NS, {"notes": "some notes", "session": "s1"})
+    with caplog.at_level("INFO", logger="agent-memory.enrich"):
+        assert w.step() is True
+    served = [r.getMessage() for r in caplog.records if r.levelname == "INFO"]
+    assert any("extract" in m and "default-model" in m for m in served), served
+
+    caplog.clear()
+    store.store({"namespace": NS, "title": "HA VM host", "content": "Prod-5 carries the HA VM."}, "desk")
+    store.add_question(NS, "which host carries the HA VM", "desk")
+    with caplog.at_level("INFO", logger="agent-memory.enrich"):
+        assert w.step() is True
+    served = [r.getMessage() for r in caplog.records if r.levelname == "INFO"]
+    assert any("answer" in m and "prose" in m for m in served), served
 
 
 def test_the_add_on_option_shape_is_a_flat_list(store):

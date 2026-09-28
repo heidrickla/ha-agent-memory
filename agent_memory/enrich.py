@@ -75,6 +75,10 @@ class Ollama:
         body = {
             "model": model or self.model,
             "stream": False,
+            # No `format` here, and thinking still empties the reply: it runs until prompt plus output
+            # fill the context. Measured 2026-09-28 against qwen3.5:9b on the service's 4096-token
+            # default: `done_reason: length`, prompt plus eval exactly 4096, zero characters of content.
+            "think": False,
             "options": {"temperature": 0.1},
             "messages": [
                 {"role": "system", "content": ANSWER_INSTRUCTIONS},
@@ -262,6 +266,7 @@ class Worker:
             )
         self.store.job_done(job["id"], model)
         self.store.audit("enrichment", "extract", job["namespace"], payload.get("summary_id", ""), f"{len(candidates)} candidates, model {model}")
+        LOG.info("extract job %s for %s: %d candidates, model %s", job["id"][:8], job["namespace"], len(candidates), model)
         return len(candidates)
 
     def enqueue_stale(self) -> dict | None:
@@ -301,6 +306,7 @@ class Worker:
         self.store.set_answer(q["id"], reply[:ANSWER_CHARS], f"ollama:{model}", [r["id"] for r in sources], basis)
         self.store.job_done(job["id"], model)
         self.store.audit("enrichment", "answer", q["namespace"], q["id"], f"{len(sources)} sources, model {model}")
+        LOG.info("answer job %s for %s: %d sources, model %s", job["id"][:8], q["namespace"], len(sources), model)
         return 1
 
     def step(self) -> bool:
@@ -317,9 +323,8 @@ class Worker:
         if job is None or not self.last_available:
             return False
         try:
-            n = self.run_job(job)
+            self.run_job(job)  # each handler logs what it did and the model that served it
             self.processed += 1
-            LOG.info("job %s: %d candidates for %s", job["id"][:8], n, job["namespace"])
         except (ValueError, urllib.error.URLError, OSError, TimeoutError) as err:
             attempts = self.store.job_attempts(job["id"]) + 1
             give_up = attempts >= MAX_ATTEMPTS
