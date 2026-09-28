@@ -1,13 +1,12 @@
 # Shared memory for Claude Code and Codex
 
-Status: revision 2, 2026-09-28, after Codex review round 1 (12 findings, recorded in ha-management `records/svc-agent-memory.md`). Server and hook changes built in agent-memory 0.10.1 and the hook at ha-management `7a0ba6e` (2026-09-28). Client token wiring waits for the owner's approval; the IP client is still in place. The advisory duplicate check is deferred until labelled pairs exist. Decisions marked OPEN are the owner's.
+Status: revision 2, 2026-09-28, after Codex review rounds 1 and 2 (recorded in ha-management `records/svc-agent-memory.md`). Built in agent-memory 0.11.0 and the ha-management hooks of the same day: per-agent tokens (Claude and Codex), receipts bound to the client and every input with tombstones past the retention, one screen for every database write, one transaction per mutation, the bootstrap budget on the wire, relative `path:` anchors resolved against their repository's checkout. The IP client stays until both apps have restarted with the token variables. The advisory duplicate check is deferred until labelled pairs exist.
 
 Known gaps after the build (2026-09-28):
 - Supersession happens only when a record is created, so a reviewed candidate cannot take over from an older active record.
-- Every closed session adds a candidate summary, so candidates accumulate until someone reviews them (Open 1).
+- Every closed session adds a candidate summary, so candidates accumulate until the agent reviews them at session start.
 - Whole-response budgeting shows 5 items and leaves 11 out for ha-agent-memory's bootstrap at 500 tokens (2,000 bytes).
-- No per-field length limits: an oversized title is stored, it just never fits bootstrap.
-- A relative `path:` anchor is checked against the session's working directory, so it reads missing from other repositories and files refutations. On 2026-09-28 two global constraints fell to effective confidence 0.001 and 0.015 this way; their anchors were rewritten as absolute paths.
+- No per-field length limits beyond namespace and topics: an oversized title is stored, it just never fits bootstrap.
 - Search, get and project-context packing still admit their first item whatever its size.
 - Tokens as user environment variables are readable by every process, both agents' shells included.
 
@@ -53,7 +52,7 @@ Token handling: each token is generated on desktop and stored where only its cli
 
 ## Read path
 
-1. Session start: the SessionStart hook calls `GET /api/bootstrap` for the working repository's namespace. The budget is enforced on the whole serialized response, and an item that does not fit is never admitted, the first one included (DR-004).
+1. Session start: the SessionStart hook calls `GET /api/bootstrap` for the working repository's namespace. The budget is enforced on the bytes on the wire (the REST body, or the whole JSON-RPC reply over MCP), and an item that does not fit is never admitted, the first one included (DR-004).
 2. Search on demand: `memory_search`, cosine over record embeddings when the encoder answers, FTS5 otherwise (0.9.0, offline eval MRR 0.94 against 0.83).
 3. Hub reach: a hub namespace searches every repository namespace, as today.
 4. Staleness: each anchor type names the process that checks it and where it runs. Only entity anchors are swept today; path, host and URL anchors are reported by clients. Unchecked, unavailable and missing are tracked separately, and a record whose anchor is missing is flagged in results (DR-009).
@@ -68,7 +67,7 @@ Token handling: each token is generated on desktop and stored where only its cli
 | 4. Supersede | separate from duplicates. Allowed only for an active target in the same namespace, when the replacement is itself active, never to itself, and never in a cycle; checked in the same transaction (DR-005, DR-010) |
 | 5. Status | server-owned, as under Trust. A preference the owner states is `active` with no review (settled) |
 | 6. Concurrency | an integer `revision` on every record, incremented by every mutation (content, anchors, evidence, status). `memory_update` takes the revision it read, applies `UPDATE ... WHERE id=? AND revision=?` with the anchor and lifecycle changes in one transaction, and a mismatch returns the current record and revision. `updated_at` stays for display (DR-006) |
-| 7. Offline | no general outbox. Direct edits fail visibly when the service is away. Only `session_close` events are spooled locally, each with an operation id; the service keeps an idempotency receipt per id and returns the original result on replay (DR-007) |
+| 7. Offline | no general outbox. Direct edits fail visibly when the service is away. Only `session_close` events are spooled locally, each with an operation id and the client that made it; only that client's next session replays it, and not past the receipt retention. The service keeps an idempotency receipt per id, bound to the client and every input, returns the original result on replay, and keeps a tombstone past the retention so an id never runs twice (DR-007) |
 
 The existing queue (session close, then an extraction job, then candidates) stays.
 
@@ -121,7 +120,4 @@ SQLite with FTS5 and a float32 embeddings table, in the add-on. Measured 2026-09
 - Preferences the owner states are written `active` with no review (the owner, 2026-09-28).
 - Codex memories are reviewed before import (the owner, 2026-09-28).
 - `AGENTS.md` is the only always-loaded source; no pinning; per-agent tokens; server-owned identity and status; integer revisions; only session-close events spool offline; a manifest decides migration (the owner chose Codex's simpler design, 2026-09-28).
-
-## Open
-
-1. Who reviews candidates: the agent at session start, or the owner.
+- Candidates are reviewed by the agent at session start (the owner, 2026-09-28).

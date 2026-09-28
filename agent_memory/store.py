@@ -19,9 +19,9 @@ import uuid
 
 # The add-on and the tests import modules top-level; the offline eval imports `agent_memory.store`.
 if __package__:
-    from .filters import screen_fields, url_credentials
+    from .filters import masked, screen, screen_fields, secret, url_credentials
 else:
-    from filters import screen_fields, url_credentials
+    from filters import masked, screen, screen_fields, secret, url_credentials
 
 TYPES = (
     "architectural-decision",
@@ -70,7 +70,7 @@ create table if not exists memories (
 );
 create table if not exists receipts (
   op_id text primary key, at text not null, client text not null, operation text not null,
-  digest text not null, result text not null
+  digest text not null, result text not null, expired_at text
 );
 create index if not exists memories_ns on memories(namespace, status);
 create table if not exists audit (
@@ -115,7 +115,9 @@ create table if not exists embeddings (
 applies only at the revision the caller read, because `updated_at` has one-second resolution.
 
 `receipts` holds the result of each operation sent with an operation id, so a replay after a lost
-response returns that result instead of acting twice. Only `session_close` takes one.
+response returns that result instead of acting twice. Only `session_close` takes one. The digest
+covers the client that sent it and every input the operation used. Past the retention the result is
+dropped and the row stays as a tombstone (`expired_at`), so an id is never executed a second time.
 
 `anchors.last_state` is the last definitive check (`ok` or `missing`, empty when never checked);
 `unavailable_since` is set while the checker could not look and cleared by the next definitive check.
@@ -308,6 +310,62 @@ class Conflict(Exception):
         self.current = current
 
 
+WRITE_RE = re.compile(r"^\s*(?:(?:insert|replace)(?:\s+or\s+\w+)?\s+into\s+(\w+)|update(?:\s+or\s+\w+)?\s+(\w+)|delete\s+from\s+(\w+))", re.IGNORECASE)
+
+
+class Rows:
+    """One statement's result, fetched in full while the store lock was held."""
+
+    def __init__(self, cursor: sqlite3.Cursor):
+        self._rows = cursor.fetchall() if cursor.description else []
+        self.rowcount = cursor.rowcount
+        self._next = 0
+
+    def fetchone(self):
+        if self._next >= len(self._rows):
+            return None
+        self._next += 1
+        return self._rows[self._next - 1]
+
+    def fetchall(self) -> list:
+        rest, self._next = self._rows[self._next :], len(self._rows)
+        return rest
+
+    def __iter__(self):
+        return iter(self.fetchall())
+
+
+class GuardedDB:
+    """The store's one connection, and the only way to it.
+
+    Every statement runs under the store lock and returns its rows fetched in full, so a read never
+    sees rows of a transaction another thread holds open: that thread holds the lock until it commits
+    or rolls back. Every write passes each string parameter through the secret screen before it runs,
+    so nothing carrying a credential or the do-not-store marker reaches the database, whichever method
+    wrote it; the refusal names the table and the pattern."""
+
+    def __init__(self, conn: sqlite3.Connection, lock: threading.RLock):
+        self.conn = conn
+        self.lock = lock
+
+    def execute(self, sql: str, params: tuple | list = ()) -> Rows:
+        write = WRITE_RE.match(sql)
+        if write:
+            for value in params:
+                reason = secret(value) if isinstance(value, str) else None
+                if reason:
+                    raise Refused(next(t for t in write.groups() if t), reason)
+        with self.lock:
+            return Rows(self.conn.execute(sql, params))
+
+    def executescript(self, script: str) -> None:
+        with self.lock:
+            self.conn.executescript(script)
+
+    def close(self) -> None:
+        self.conn.close()
+
+
 def _strings(name: str, value: object) -> list[str]:
     if value is None:
         return []
@@ -342,8 +400,9 @@ class Store:
         self.path = path
         os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
         self.lock = threading.RLock()
-        self.db = sqlite3.connect(path, check_same_thread=False, isolation_level=None)
-        self.db.row_factory = sqlite3.Row
+        conn = sqlite3.connect(path, check_same_thread=False, isolation_level=None)
+        conn.row_factory = sqlite3.Row
+        self.db = GuardedDB(conn, self.lock)
         self.db.execute("pragma journal_mode=wal")
         self.db.execute("pragma synchronous=normal")
         self.db.executescript(SCHEMA)
@@ -355,7 +414,7 @@ class Store:
 
     def _migrate(self) -> None:
         """Columns added after a database was created. Existing records start at revision 1."""
-        added = {"memories": ("revision", "integer not null default 1"), "anchors": ("unavailable_since", "text")}
+        added = {"memories": ("revision", "integer not null default 1"), "anchors": ("unavailable_since", "text"), "receipts": ("expired_at", "text")}
         for table, (column, decl) in added.items():
             if column not in {r[1] for r in self.db.execute(f"pragma table_info({table})")}:
                 self.db.execute(f"alter table {table} add column {column} {decl}")
@@ -376,8 +435,8 @@ class Store:
 
     def refuse(self, client: str, namespace: str, record_id: str, fields: dict) -> None:
         """Screen every value about to be persisted, and URL anchors for credentials. A hit is audited
-        by field and pattern name, never the text, and raises Refused. Call it outside a transaction,
-        so the audit row survives the refusal."""
+        by field and pattern name, never the text (`audit` masks a namespace that carries one), and
+        raises Refused. Call it outside a transaction, so the audit row survives the refusal."""
         hit = screen_fields(fields)
         anchors = fields.get("anchors") if isinstance(fields.get("anchors"), (list, tuple)) else []
         for a in anchors:
@@ -457,13 +516,19 @@ class Store:
             return None
         self.refuse(client, rec["namespace"], rid, {"quote": quote, "agent": agent, "source_session": source_session})
         with self.transaction():
-            self.db.execute(
-                "insert into evidence(id, record_id, at, stance, quote, agent, source_session) values (?,?,?,?,?,?,?)",
-                (str(uuid.uuid4()), rid, now_iso(), stance, quote.strip()[:1000], agent or client, source_session),
-            )
+            if self.db.execute("select 1 from memories where id=? and deleted_at is null", (rid,)).fetchone() is None:
+                return None  # forgotten since it was read
+            self._evidence(rid, rec["namespace"], quote, stance, client, agent, source_session)
             self.db.execute("update memories set updated_at=?, revision=revision+1 where id=?", (now_iso(), rid))
-            self.audit(client, stance, rec["namespace"], rid, quote.strip()[:200])
         return self.get(rid)
+
+    def _evidence(self, rid: str, namespace: str, quote: str, stance: str, client: str, agent: str = "", source_session: str = "") -> None:
+        """One observation on a record, inside the caller's transaction; the caller advances the revision."""
+        self.db.execute(
+            "insert into evidence(id, record_id, at, stance, quote, agent, source_session) values (?,?,?,?,?,?,?)",
+            (str(uuid.uuid4()), rid, now_iso(), stance, quote.strip()[:1000], agent or client, source_session),
+        )
+        self.audit(client, stance, namespace, rid, quote.strip()[:200])
 
     def evidence(self, rid: str, limit: int = 20) -> list[dict]:
         with self.lock:
@@ -471,8 +536,11 @@ class Store:
         return [dict(r) for r in rows]
 
     def audit(self, client: str, action: str, namespace: str = "", record_id: str = "", detail: str = "") -> None:
-        with self.lock:
-            self.db.execute("insert into audit(at, client, action, namespace, record_id, detail) values (?,?,?,?,?,?)", (now_iso(), client, action, namespace, record_id, detail[:500]))
+        """An audit row is kept whatever it describes, so each value carrying a secret is replaced by
+        `[screened:<pattern>]`, judged on the whole value before it is cut to length."""
+        values = [masked(str(v or "")) for v in (client, action, namespace, record_id, detail)]
+        values[4] = values[4][:500]
+        self.db.execute("insert into audit(at, client, action, namespace, record_id, detail) values (?,?,?,?,?,?)", (now_iso(), *values))
 
     # ------------------------------------------------------------- writes
     def store(self, rec: dict, client: str) -> dict:
@@ -597,39 +665,51 @@ class Store:
             self.db.execute("insert or ignore into anchors(record_id, anchor) values (?, ?)", (rid, a))
 
     def anchors(self, kind: str) -> list[dict]:
-        """Anchors of one kind on live active records, with their last check: `state` is unchecked, ok or
-        missing, and `unavailable_since` is set while the checker could not look."""
-        with self.lock:
-            rows = self.db.execute(
-                "select a.record_id, a.anchor, a.last_state, a.last_checked, a.unavailable_since from anchors a join memories m on m.id = a.record_id "
-                "where m.status='active' and m.deleted_at is null and a.anchor like ? order by a.record_id, a.anchor",
-                (kind + ":%",),
-            ).fetchall()
+        """Anchors of one kind on live active records, with the record's namespace and the last check:
+        `state` is unchecked, ok or missing, and `unavailable_since` is set while the checker could not
+        look. A checker resolves a relative `path:` anchor against the namespace's own checkout."""
+        rows = self.db.execute(
+            "select a.record_id, m.namespace, a.anchor, a.last_state, a.last_checked, a.unavailable_since from anchors a join memories m on m.id = a.record_id "
+            "where m.status='active' and m.deleted_at is null and a.anchor like ? order by a.record_id, a.anchor",
+            (kind + ":%",),
+        ).fetchall()
         return [dict(r, state=r["last_state"] or "unchecked") for r in rows]
 
     def report_anchor(self, rid: str, anchor: str, state: str, client: str) -> dict:
-        """Record one check. `unavailable` means the checker could not look: it keeps the last definitive
-        state and files nothing. Evidence is filed only on a transition between ok and missing, so a
-        sweep repeated every few hours does not pile contradictions onto one record."""
+        """Record one check, in one transaction: the previous state is read, the anchor updated, any
+        evidence filed and the revision advanced together, so a failure leaves nothing and two reports
+        cannot both see the same previous state.
+
+        `unavailable` means the checker could not look: it keeps the last definitive state and files
+        nothing. Evidence is filed only on a transition between ok and missing, so a sweep repeated
+        every few hours does not pile contradictions onto one record. A change of state advances the
+        record's revision; a check that finds the state unchanged only moves `last_checked`."""
         if state not in ANCHOR_STATES:
             raise Rejected(f"state must be one of {', '.join(ANCHOR_STATES)}")
-        with self.lock:
-            row = self.db.execute("select last_state, unavailable_since from anchors where record_id=? and anchor=?", (rid, anchor)).fetchone()
-        if row is None:
-            raise Rejected(f"record {rid} has no anchor {anchor}")
-        before = row["last_state"]
-        with self.lock:
+        with self.transaction():
+            row = self.db.execute(
+                "select a.last_state, a.unavailable_since, m.namespace from anchors a join memories m on m.id = a.record_id where a.record_id=? and a.anchor=?",
+                (rid, anchor),
+            ).fetchone()
+            if row is None:
+                raise Rejected(f"record {rid} has no anchor {anchor}")
+            before, ts, filed = row["last_state"], now_iso(), ""
             if state == "unavailable":
-                self.db.execute("update anchors set unavailable_since=coalesce(unavailable_since, ?) where record_id=? and anchor=?", (now_iso(), rid, anchor))
-                return {"record_id": rid, "anchor": anchor, "state": state, "was": before or "unchecked", "filed": ""}
-            self.db.execute("update anchors set last_state=?, last_checked=?, unavailable_since=null where record_id=? and anchor=?", (state, now_iso(), rid, anchor))
-        filed = ""
-        if state == "missing" and before != "missing":
-            self.corroborate(rid, f"anchor {anchor} no longer resolves", "contradicts", client)
-            filed = "contradicts"
-        elif state == "ok" and before == "missing":
-            self.corroborate(rid, f"anchor {anchor} resolves again", "corroborates", client)
-            filed = "corroborates"
+                changed = row["unavailable_since"] is None
+                if changed:
+                    self.db.execute("update anchors set unavailable_since=? where record_id=? and anchor=?", (ts, rid, anchor))
+            else:
+                changed = before != state or row["unavailable_since"] is not None
+                self.db.execute("update anchors set last_state=?, last_checked=?, unavailable_since=null where record_id=? and anchor=?", (state, ts, rid, anchor))
+                if state == "missing" and before != "missing":
+                    filed = "contradicts"
+                    self._evidence(rid, row["namespace"], f"anchor {anchor} no longer resolves", filed, client)
+                elif state == "ok" and before == "missing":
+                    filed = "corroborates"
+                    self._evidence(rid, row["namespace"], f"anchor {anchor} resolves again", filed, client)
+            if changed:
+                bump = ", updated_at=?" if filed else ""
+                self.db.execute(f"update memories set revision=revision+1{bump} where id=?", (ts, rid) if filed else (rid,))
         return {"record_id": rid, "anchor": anchor, "state": state, "was": before or "unchecked", "filed": filed}
 
     def update(self, rid: str, changes: dict, client: str, revision: int) -> dict | None:
@@ -703,47 +783,52 @@ class Store:
 
     def purge(self, deleted_days: int) -> int:
         cutoff = (dt.datetime.now(dt.UTC) - dt.timedelta(days=deleted_days)).isoformat(timespec="seconds")
-        with self.lock:
+        with self.transaction():
             cur = self.db.execute("delete from memories where deleted_at is not null and deleted_at < ?", (cutoff,))
             # A vector outlives nothing it was made from: purged, forgotten or never-live records lose theirs.
             self.db.execute("delete from embeddings where record_id not in (select id from memories where deleted_at is null)")
             # Queries age out on the same clock. They are a demand signal, not a record.
             self.db.execute("delete from queries where at < ?", (cutoff,))
-            # A spooled close is replayed within days; a receipt older than the retention answers nothing.
-            self.db.execute("delete from receipts where at < ?", (cutoff,))
+            # A receipt past the retention keeps its id, client and digest as a tombstone: a replay after
+            # that is refused as expired, never run as a new operation.
+            self.db.execute("update receipts set result='{}', expired_at=? where at < ? and expired_at is null", (now_iso(), cutoff))
         return cur.rowcount
 
     def put_embedding(self, rid: str, digest: str, model: str, vector: bytes) -> int:
         """Store one record's vector, replacing its previous one. 0 when the record is gone by now."""
-        with self.lock:
-            cur = self.db.execute(
-                "insert or replace into embeddings(record_id, digest, model, vector) select ?, ?, ?, ? where exists (select 1 from memories where id=? and deleted_at is null)",
-                (rid, digest, model, vector, rid),
-            )
+        cur = self.db.execute(
+            "insert or replace into embeddings(record_id, digest, model, vector) select ?, ?, ?, ? where exists (select 1 from memories where id=? and deleted_at is null)",
+            (rid, digest, model, vector, rid),
+        )
         return cur.rowcount
 
     def note_query(self, namespace: str, client: str, kind: str, query: str, hits: int, top_rank: float) -> None:
-        """Record one read and how well it was answered. Never raises: a failure to measure demand
-        must not fail the search that a session is actually waiting on."""
+        """Record one read and how well it was answered. A query that screens is counted as
+        `[redacted]`, never quoted; a namespace or client that carries a secret is not recorded at all.
+        Never raises: a failure to measure demand must not fail the search a session is waiting on."""
         try:
+            if secret(namespace) or secret(client):
+                return
+            query = "[redacted]" if screen(query) else query
             n = normalise(query)
             if not n:
                 return
-            with self.lock:
-                self.db.execute(
-                    "insert into queries(id, at, namespace, client, kind, query, norm, hits, top_rank) values (?,?,?,?,?,?,?,?,?)",
-                    (str(uuid.uuid4()), now_iso(), namespace, client, kind, query.strip()[:300], n, int(hits), float(top_rank)),
-                )
-        except sqlite3.Error:
+            self.db.execute(
+                "insert into queries(id, at, namespace, client, kind, query, norm, hits, top_rank) values (?,?,?,?,?,?,?,?,?)",
+                (str(uuid.uuid4()), now_iso(), namespace, client, kind, query.strip()[:300], n, int(hits), float(top_rank)),
+            )
+        except (sqlite3.Error, Rejected):
             pass
 
     def add_question(self, namespace: str, question: str, client: str, asked: int = 0) -> dict:
-        """Declare a standing question. Asking the same thing twice returns the existing one."""
+        """Declare a standing question. Asking the same thing twice returns the existing one. The question
+        and its namespace are screened like a record's fields."""
         n = normalise(question)
         if not n:
             raise ValueError("a question of nothing but filler is not a question")
+        self.refuse(client, namespace, "", {"namespace": namespace, "question": question})
         ts = now_iso()
-        with self.lock:
+        with self.transaction():
             row = self.db.execute("select * from questions where namespace=? and norm=?", (namespace, n)).fetchone()
             if row:
                 if asked > row["asked"]:
@@ -754,7 +839,7 @@ class Store:
                 "insert into questions(id, created_at, updated_at, namespace, question, norm, asked) values (?,?,?,?,?,?,?)",
                 (qid, ts, ts, namespace, question.strip()[:300], n, int(asked)),
             )
-        self.audit(client, "question", namespace, qid, question.strip()[:200])
+            self.audit(client, "question", namespace, qid, question.strip()[:200])
         return self.get_question(qid)
 
     def get_question(self, qid: str) -> dict | None:
@@ -897,10 +982,10 @@ class Store:
         if types:
             sql += " and m.type in (" + ",".join("?" for _ in types) + ")"
             params += list(types)
-        rows = self.db.execute(sql, params).fetchall()
+        with self.lock:  # the rows and their anchors and evidence as of one moment
+            rows = [(r, self._row(r)) for r in self.db.execute(sql, params).fetchall()]
         hits = []
-        for r in rows:
-            d = self._row(r)
+        for r, d in rows:
             base = -float(r["score"]) if self.fts else 1.0  # bm25 is negative, better is lower
             scope_rank = scopes.index(d["namespace"]) if d["namespace"] in scopes else len(scopes)
             scope_w = 1.0 + 0.5 * max(0, len(scopes) - scope_rank) / max(1, len(scopes))
@@ -924,7 +1009,8 @@ class Store:
             params += list(types)
         sql += " order by updated_at desc limit ?"
         params.append(limit)
-        return [self._row(r) for r in self.db.execute(sql, params).fetchall()]
+        with self.lock:
+            return [self._row(r) for r in self.db.execute(sql, params).fetchall()]
 
     def timeline(self, namespace: str, limit: int = 30, statuses: tuple[str, ...] = ()) -> list[dict]:
         """Newest first, every status unless `statuses` names some: the review of candidates reads
@@ -934,8 +1020,8 @@ class Store:
         if statuses:
             sql += " and status in (" + ",".join("?" for _ in statuses) + ")"
             params += list(statuses)
-        rows = self.db.execute(sql + " order by created_at desc limit ?", (*params, limit)).fetchall()
-        return [self._row(r) for r in rows]
+        with self.lock:
+            return [self._row(r) for r in self.db.execute(sql + " order by created_at desc limit ?", (*params, limit)).fetchall()]
 
     def count_status(self, namespace: str, status: str) -> int:
         return self.db.execute("select count(*) from memories where namespace=? and status=? and deleted_at is null", (namespace, status)).fetchone()[0]
@@ -995,29 +1081,28 @@ class Store:
 
     # ------------------------------------------------------------- jobs
     def enqueue(self, kind: str, namespace: str, payload: dict, client: str = "system") -> str:
-        """Queue a job. Its payload is persisted, so it passes the same screen as a record."""
-        self.refuse(client, namespace, "", {f"payload.{k}": v for k, v in payload.items()})
+        """Queue a job. Its payload and namespace are persisted, so they pass the same screen as a record."""
+        self.refuse(client, namespace, "", {"namespace": namespace, **{f"payload.{k}": v for k, v in payload.items()}})
         jid = str(uuid.uuid4())
-        with self.lock:
-            self.db.execute("insert into jobs(id, created_at, kind, namespace, payload) values (?,?,?,?,?)", (jid, now_iso(), kind, namespace, json.dumps(payload)))
+        self.db.execute("insert into jobs(id, created_at, kind, namespace, payload) values (?,?,?,?,?)", (jid, now_iso(), kind, namespace, json.dumps(payload)))
         return jid
 
     # ------------------------------------------------------------- receipts
     def receipt(self, op_id: str) -> dict | None:
-        with self.lock:
-            r = self.db.execute("select * from receipts where op_id=?", (op_id,)).fetchone()
+        """The receipt for an operation id: `expired` once only its tombstone is left."""
+        r = self.db.execute("select * from receipts where op_id=?", (op_id,)).fetchone()
         if r is None:
             return None
         d = dict(r)
         d["result"] = json.loads(d["result"])
+        d["expired"] = d["expired_at"] is not None
         return d
 
     def put_receipt(self, op_id: str, client: str, operation: str, digest: str, result: dict) -> None:
-        with self.lock:
-            self.db.execute(
-                "insert into receipts(op_id, at, client, operation, digest, result) values (?,?,?,?,?,?)",
-                (op_id, now_iso(), client, operation, digest, json.dumps(result)),
-            )
+        self.db.execute(
+            "insert into receipts(op_id, at, client, operation, digest, result) values (?,?,?,?,?,?)",
+            (op_id, now_iso(), client, operation, digest, json.dumps(result)),
+        )
 
     def next_job(self) -> dict | None:
         r = self.db.execute("select * from jobs where status='queued' order by created_at limit 1").fetchone()
@@ -1028,12 +1113,10 @@ class Store:
         return d
 
     def job_done(self, jid: str, model: str = "") -> None:
-        with self.lock:
-            self.db.execute("update jobs set status='done', done_at=?, model=? where id=?", (now_iso(), model, jid))
+        self.db.execute("update jobs set status='done', done_at=?, model=? where id=?", (now_iso(), model, jid))
 
     def job_failed(self, jid: str, error: str, give_up: bool) -> None:
-        with self.lock:
-            self.db.execute("update jobs set status=?, attempts=attempts+1, last_error=? where id=?", ("failed" if give_up else "queued", error[:300], jid))
+        self.db.execute("update jobs set status=?, attempts=attempts+1, last_error=? where id=?", ("failed" if give_up else "queued", masked(error)[:300], jid))
 
     def job_attempts(self, jid: str) -> int:
         r = self.db.execute("select attempts from jobs where id=?", (jid,)).fetchone()
@@ -1046,7 +1129,8 @@ class Store:
     # ------------------------------------------------------------- export
     def export(self, out_dir: str) -> dict:
         os.makedirs(out_dir, exist_ok=True)
-        rows = [self._row(r) for r in self.db.execute("select * from memories where deleted_at is null order by namespace, created_at").fetchall()]
+        with self.lock:
+            rows = [self._row(r) for r in self.db.execute("select * from memories where deleted_at is null order by namespace, created_at").fetchall()]
         with open(os.path.join(out_dir, "memories.jsonl"), "w", encoding="utf-8") as fh:
             for d in rows:
                 fh.write(json.dumps(d, ensure_ascii=False) + "\n")

@@ -42,8 +42,13 @@ def normalize_remote(url: str, github_owner: str, forge_owner: str, forge_hosts:
     return None
 
 
+MAX_NAMESPACE = 160  # GitHub's owner (39) and repository (100) limits fit
+
+
 def valid_namespace(ns: str) -> bool:
-    return bool(re.fullmatch(r"(global|github/[\w.-]+/[\w.-]+|gitea/[\w.-]+/[\w.-]+|projects/[\w.-]+|topics/[\w.-]+|local/[\w.-]+)", ns or ""))
+    if not isinstance(ns, str) or len(ns) > MAX_NAMESPACE:
+        return False
+    return bool(re.fullmatch(r"(global|github/[\w.-]+/[\w.-]+|gitea/[\w.-]+/[\w.-]+|projects/[\w.-]+|topics/[\w.-]+|local/[\w.-]+)", ns))
 
 
 def is_repository(ns: str) -> bool:

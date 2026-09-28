@@ -15,8 +15,8 @@ import time
 from collections.abc import Callable
 
 import embed
-from filters import redact, screen
-from namespaces import is_repository, normalize_remote, scopes_for, valid_namespace
+from filters import DO_NOT_STORE, redact, screen
+from namespaces import MAX_NAMESPACE, is_repository, normalize_remote, scopes_for, valid_namespace
 from store import TYPES, UPDATABLE, Conflict, Refused, Rejected, Store, tokens
 
 PROTOCOL = "2025-06-18"
@@ -43,6 +43,8 @@ DIRECT_FIELDS = (
 )
 OP_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{7,63}$")
 NOTES_LIMIT = 12000
+TOPIC_RE = re.compile(r"[\w.-]{1,40}")
+MAX_TOPICS = 8
 
 
 class ToolError(Exception):
@@ -55,8 +57,18 @@ class ToolError(Exception):
 
 
 def serialized_bytes(doc: dict) -> int:
-    """The response as the REST route sends it and MCP carries it: JSON, UTF-8, non-ASCII unescaped."""
+    """The body the REST route sends for `doc`: JSON, UTF-8, non-ASCII unescaped."""
     return len(json.dumps(doc, ensure_ascii=False).encode("utf-8"))
+
+
+def rpc_result(mid, result: dict, is_error: bool = False) -> dict:
+    """A tools/call reply: the result as JSON text inside the JSON-RPC envelope."""
+    return {"jsonrpc": "2.0", "id": mid, "result": {"content": [{"type": "text", "text": json.dumps(result, ensure_ascii=False)}], "isError": is_error}}
+
+
+def permits(scopes: set[str], needed: str) -> bool:
+    """The one scope rule, for MCP tools and REST routes alike."""
+    return needed in scopes or "admin" in scopes
 
 
 class Memory:
@@ -80,8 +92,13 @@ class Memory:
     # ------------------------------------------------------------ helpers
     def scopes(self, namespace: str, topics: list[str] | None = None) -> list[str]:
         if not valid_namespace(namespace):
-            raise ToolError(f"namespace {namespace!r} is not one of global, github/<owner>/<repo>, gitea/<owner>/<repo>, projects/<name>, topics/<name>, local/<name>")
-        return scopes_for(namespace, self.project_links, topics or [])
+            raise ToolError(
+                f"namespace {str(namespace)[:MAX_NAMESPACE]!r} is not one of global, github/<owner>/<repo>, gitea/<owner>/<repo>, projects/<name>, topics/<name>, local/<name>, within {MAX_NAMESPACE} characters"
+            )
+        topics = list(topics or [])
+        if len(topics) > MAX_TOPICS or not all(isinstance(t, str) and TOPIC_RE.fullmatch(t) for t in topics):
+            raise ToolError(f"topics: at most {MAX_TOPICS}, each 1-40 letters, digits, '.', '_' or '-'")
+        return scopes_for(namespace, self.project_links, topics)
 
     def reach(self, namespace: str, scopes: list[str]) -> list[str]:
         """For a hub, every other repository namespace holding records: sessions there work on
@@ -115,7 +132,9 @@ class Memory:
         ns = normalize_remote(remote_url, self.o.get("github_owner") or "heidrickla", self.o.get("forge_owner") or "heidrickla", tuple(self.o.get("forge_hosts") or ["forge.example", "192.0.2.20"]))
         return {"namespace": ns, "accepted": ns is not None, "scopes": self.scopes(ns) if ns else []}
 
-    def bootstrap(self, namespace: str, topics: list[str] | None = None) -> dict:
+    def bootstrap(self, namespace: str, topics: list[str] | None = None, wire: Callable[[dict], int] = serialized_bytes) -> dict:
+        """`wire` measures the bytes the response takes on the wire: the REST body by default, the whole
+        JSON-RPC reply with its escaped text when the call came over MCP (`jsonrpc`)."""
         scopes = self.scopes(namespace, topics)
         constraints = self.store.by_namespace(scopes, ("constraint", "architectural-decision", "preference"), limit=12)
         open_work = self.store.by_namespace(scopes, ("open-question", "next-step"), limit=8)
@@ -130,8 +149,9 @@ class Memory:
                     seen.add(r["id"])
                     items.append(self._snippet(r, chars))
         fields = ("id", "type", "title", "snippet", "confidence", "missing_anchors")
-        # The budget covers the whole serialized response, envelope included. Placeholders take the
-        # widest value each counter can have, so the final response is never longer than measured.
+        # The budget covers the bytes on the wire, the transport's envelope and escaping included.
+        # Placeholders take the widest value each counter can have, so the final response is never
+        # longer than measured.
         limit = BUDGETS["bootstrap"] * 4
         doc = {
             "namespace": namespace,
@@ -144,13 +164,15 @@ class Memory:
             "truncated": False,
             "note": NOTE,
         }
+        if wire(doc) > limit:
+            raise ToolError(f"the bootstrap of {namespace} does not fit its {limit}-byte budget even with no records; its scopes are too long")
         admitted: list[dict] = []
         for it in items:
             slim = {k: it[k] for k in fields if k in it}
-            if serialized_bytes(dict(doc, items=[*admitted, slim])) <= limit:
+            if wire(dict(doc, items=[*admitted, slim])) <= limit:
                 admitted.append(slim)
         doc.update(items=admitted, left_out=len(items) - len(admitted), truncated=len(admitted) < len(items))
-        doc["approx_tokens"] = math.ceil(serialized_bytes(doc) / 4)
+        doc["approx_tokens"] = math.ceil(wire(doc) / 4)
         return doc
 
     def search(self, namespace: str, query: str, topics: list[str] | None = None, limit: int = 12, include_candidates: bool = False, types: list[str] | None = None, client: str = "") -> dict:
@@ -158,11 +180,10 @@ class Memory:
         reach = self.reach(namespace, scopes)
         statuses = ("active", "candidate") if include_candidates else ("active",)
         hits, ranking, fts = self._retrieve(query, scopes, max(1, min(int(limit), 50)), statuses, tuple(types or ()), tuple(reach))
-        # What was asked, and how well it came back. A query can carry a secret as easily as a
-        # record can, so it passes the same screen; a screened query is counted, never quoted.
-        # The count is FTS's whichever ranking answered: cosine returns the nearest records whether or
-        # not any of them answers, so its count would call every question answered.
-        self.store.note_query(namespace, client, "search", "[redacted]" if screen(query) else query, len(fts), fts[0]["rank"] if fts else 0.0)
+        # What was asked, and how well it came back; `note_query` screens it. The count is FTS's
+        # whichever ranking answered: cosine returns the nearest records whether or not any of them
+        # answers, so its count would call every question answered.
+        self.store.note_query(namespace, client, "search", query, len(fts), fts[0]["rank"] if fts else 0.0)
         packed, truncated, used = self._pack(
             [self._snippet(h) for h in hits], BUDGETS["search"], ("id", "namespace", "type", "title", "snippet", "confidence", "status", "revision", "missing_anchors", "why")
         )
@@ -193,10 +214,10 @@ class Memory:
 
     def question_add(self, namespace: str, question: str, client: str) -> dict:
         self.scopes(namespace)
-        if screen(question):
-            raise ToolError("not added: the question screens as carrying a secret")
         try:
             q = self.store.add_question(namespace, question, client)
+        except Refused as err:
+            raise ToolError(f"not added: {err}") from err
         except ValueError as err:
             raise ToolError(str(err)) from err
         return {"question": {k: q[k] for k in ("id", "namespace", "question", "answered_at", "stale")}}
@@ -338,14 +359,17 @@ class Memory:
     def session_close(self, namespace: str, summary: str, agent: str, session: str, notes: str, client: str, enrich: bool, op_id: str | None = None) -> dict:
         """Store the summary as a candidate and queue extraction from the notes.
 
-        The summary is stored as written and refused if it screens. The notes are redacted, and notes
-        carrying the do-not-store marker are refused: nothing from them is queued. With `op_id` the
-        result is kept as a receipt in the same transaction, and a replay of that id returns it."""
+        The summary is stored as written and refused if it screens. Notes carrying the do-not-store
+        marker anywhere in the text as sent are refused, so nothing from them is queued; other notes are
+        redacted, then cut to NOTES_LIMIT. With `op_id` the result is kept as a receipt in the same
+        transaction, bound to the client and every input, and a replay of that id by the same client
+        with the same inputs returns it."""
         self.scopes(namespace)
         if op_id is not None and not (isinstance(op_id, str) and OP_ID_RE.match(op_id)):
             raise ToolError("op_id must be 8 to 64 letters, digits, '-' or '_'")
-        digest = hashlib.sha256(json.dumps([namespace, summary, session, notes or "", bool(enrich)]).encode()).hexdigest()
-        replay = self._replay(op_id, digest)
+        notes = notes or ""
+        digest = hashlib.sha256(json.dumps([client, agent, namespace, summary, session, notes, bool(enrich)]).encode()).hexdigest()
+        replay = self._replay(op_id, digest, client)
         if replay is not None:
             return replay
         try:
@@ -353,13 +377,13 @@ class Memory:
             self.store.refuse(client, namespace, "", {"summary": summary, "agent": agent, "session": session})
         except Refused as err:
             raise ToolError(f"not stored: {err}") from err
-        notes = redact(notes or "")[:NOTES_LIMIT]
-        notes_refused = screen(notes)
+        # The marker is looked for in the notes as sent: redaction can swallow it and the cut can drop it.
+        notes_refused = "do_not_store_marker" if DO_NOT_STORE in notes else None
+        notes = "" if notes_refused else redact(notes)[:NOTES_LIMIT]
         if notes_refused:
             self.store.audit(client, "rejected", namespace, "", f"notes: {notes_refused}")
-            notes = ""
         with self.store.transaction():
-            replay = self._replay(op_id, digest)  # another request with this id may have committed since
+            replay = self._replay(op_id, digest, client)  # another request with this id may have committed since
             if replay is not None:
                 return replay
             try:
@@ -387,13 +411,19 @@ class Memory:
                 self.store.put_receipt(op_id, client, "session_close", digest, result)
         return result
 
-    def _replay(self, op_id: str | None, digest: str) -> dict | None:
-        """The first result of a session_close already done under `op_id`, or None."""
+    def _replay(self, op_id: str | None, digest: str, client: str) -> dict | None:
+        """The first result of a session_close already done under `op_id`, or None. The id used by
+        another client or for another close is refused (409); an id past the receipt retention is
+        refused as expired (410), never run again."""
         done = self.store.receipt(op_id) if op_id else None
         if done is None:
             return None
+        if done["client"] != client:
+            raise ToolError(f"op_id {op_id} was used by another client", status=409)
         if done["digest"] != digest:
             raise ToolError(f"op_id {op_id} was used for a different close", status=409)
+        if done["expired"]:
+            raise ToolError(f"op_id {op_id} expired: its close was applied at {done['at']}", status=410)
         return {**done["result"], "replayed": True}
 
     def project_context(self, namespace: str, task: str, topics: list[str] | None = None, budget: int | None = None, client: str = "") -> dict:
@@ -422,7 +452,7 @@ class Memory:
         packed, truncated, used = self._pack(selected, budget, ("id", "namespace", "type", "title", "content", "confidence", "revision", "missing_anchors", "why"))
         # A task asked for repeatedly is an information need whether or not anyone phrased it as a
         # question, so it counts towards the same demand signal as a search.
-        self.store.note_query(namespace, client, "context", "[redacted]" if screen(task) else task, len(packed), 0.0)
+        self.store.note_query(namespace, client, "context", task, len(packed), 0.0)
         return {
             "namespace": namespace,
             "task": task,
@@ -590,14 +620,15 @@ def tool_list() -> list[dict]:
     return [{"name": n, "description": d, "inputSchema": {"type": "object", "properties": p, "required": r}} for n, d, p, r, _s in TOOLS]
 
 
-def call_tool(mem: Memory, name: str, args: dict, client: str, export_dir: str, verified: bool = False) -> dict:
-    """`verified` is True for a client that authenticated by token: its name replaces any `agent` sent."""
+def call_tool(mem: Memory, name: str, args: dict, client: str, export_dir: str, verified: bool = False, wire: Callable[[dict], int] = serialized_bytes) -> dict:
+    """`verified` is True for a client that authenticated by token: its name replaces any `agent` sent.
+    `wire` measures a response on its transport, for the bootstrap budget."""
     if verified:
         args = {**args, "agent": client}
     if name == "memory_namespace":
         return mem.namespace(str(args.get("remote_url", "")))
     if name == "memory_bootstrap":
-        return mem.bootstrap(args["namespace"], args.get("topics"))
+        return mem.bootstrap(args["namespace"], args.get("topics"), wire)
     if name == "memory_search":
         return mem.search(args["namespace"], args["query"], args.get("topics"), args.get("limit") or 12, bool(args.get("include_candidates")), args.get("types"), client)
     if name == "memory_get":
@@ -662,12 +693,11 @@ def jsonrpc(mem: Memory, msg: dict, client: str, allowed_scopes: set[str], expor
         needed = TOOL_SCOPE.get(name)
         if needed is None:
             return {"jsonrpc": "2.0", "id": mid, "error": {"code": -32601, "message": f"unknown tool {name}"}}
-        if needed not in allowed_scopes and "admin" not in allowed_scopes:
-            result = {"error": f"client {client!r} lacks the {needed!r} scope"}
-            return {"jsonrpc": "2.0", "id": mid, "result": {"content": [{"type": "text", "text": json.dumps(result)}], "isError": True}}
+        if not permits(allowed_scopes, needed):
+            return rpc_result(mid, {"error": f"client {client!r} lacks the {needed!r} scope"}, True)
         try:
-            result = call_tool(mem, name, args, client, export_dir, verified)
-            return {"jsonrpc": "2.0", "id": mid, "result": {"content": [{"type": "text", "text": json.dumps(result, ensure_ascii=False)}], "isError": False}}
+            result = call_tool(mem, name, args, client, export_dir, verified, lambda doc: serialized_bytes(rpc_result(mid, doc)))
+            return rpc_result(mid, result)
         except (ToolError, KeyError, ValueError, TypeError) as err:
-            return {"jsonrpc": "2.0", "id": mid, "result": {"content": [{"type": "text", "text": json.dumps(error_body(err), ensure_ascii=False)}], "isError": True}}
+            return rpc_result(mid, error_body(err), True)
     return {"jsonrpc": "2.0", "id": mid, "error": {"code": -32601, "message": f"method not found: {method}"}}

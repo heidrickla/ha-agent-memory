@@ -18,8 +18,8 @@ active until promoted, a job done only after its records are written).
 | Retrieval order | repository, its linked projects, given topics, global; a hub's search and task match then reach every other repository namespace |
 | Ranking | cosine over record embeddings when the encoder answers, FTS5 otherwise ([Embedding retrieval](#embedding-retrieval)) |
 | Budgets | bootstrap 500 tokens over the whole response (2,000 bytes), search 750, records 2000, packet 4000 (hard limit 8000); every response reports its estimate and truncation |
-| Auth | per-client bearer token (sha256 in options) or source address; scopes read, write, delete, export, admin; a token client is recorded as the writer |
-| Filtering | every persisted field and queued payload: credentials, key material, JWTs, URL passwords and the `do-not-store` marker are refused and audited by field and pattern name |
+| Auth | per-client bearer token (sha256 in options) or source address; scopes read, write, delete, export, admin, checked by one rule for MCP tools and REST routes; a token client is recorded as the writer |
+| Filtering | every persisted field and queued payload: credentials, key material, JWTs, URL passwords and the `do-not-store` marker are refused and audited by field and pattern name; every database write passes the same screen, and audit context carrying a secret is kept as `[screened:<pattern>]` |
 | Page | ingress only, dark: health, namespaces, audit tail |
 
 ## Tools
@@ -39,24 +39,26 @@ promotes one, `memory_forget` drops it.
 |---|---|
 | Status | set by the server: `memory_store` writes `active`; extraction and import write `candidate` through `Store.store_candidate`; session summaries are `candidate`. States `active`, `candidate`, `superseded`, `deleted`; `memory_update` moves `candidate` to `active` and back; only a supersession makes `superseded` and only `memory_forget` makes `deleted` |
 | Writer | a token client's name replaces `agent`; an address client's `agent` is kept |
-| Revision | an integer on every record, advanced by every mutation (content, anchors, evidence, status, supersession, forget, rename). `memory_update(id, revision, changes)` applies only at that revision, anchors and status in the same transaction; a mismatch returns `revision` and `current` (MCP `isError`, REST 409) |
+| Revision | an integer on every record, advanced by every mutation (content, anchors, anchor state, evidence, status, supersession, forget, rename). `memory_update(id, revision, changes)` applies only at that revision, anchors and status in the same transaction; a mismatch returns `revision` and `current` (MCP `isError`, REST 409) |
+| Transactions | each mutation and the reads it depends on commit together: an update, a store with its supersession, an anchor report with its evidence, an extraction's candidates with the job's completion, an answer with its job's. Every statement runs under the store lock, so no read sees another thread's open transaction |
 | Supersede | `supersedes` on a store retires a live active record in the same namespace; never the record itself, never a cycle, and only from an active replacement; checked in the store's transaction |
-| Screen | every persisted string, list and job payload; a URL anchor with userinfo or a credential-named query or fragment parameter is refused; session notes carrying `do-not-store` are refused, and the summary is still stored |
-| Session close | `op_id` (8-64 of `A-Za-z0-9_-`) keeps the result as a receipt in the close's transaction; a replay returns it with `replayed: true`; the id reused for another close is refused (409); receipts are purged with `retention_deleted_days` |
-| Bootstrap | the 500-token budget is 2,000 bytes of the serialized response, envelope included; an item that does not fit is left out, the first included, and `left_out` counts them |
+| Screen | every persisted string, list and job payload; a URL anchor with userinfo or a query or fragment parameter named as a credential (judged by the name's words: `access_token`, `apiKey`, `session_id` refused; `author`, `session_count` kept) is refused; session notes carrying `do-not-store` anywhere in the text as sent are refused, and the summary is still stored |
+| Session close | `op_id` (8-64 of `A-Za-z0-9_-`) keeps the result as a receipt in the close's transaction, bound to the client and every input; a replay by that client with the same inputs returns it with `replayed: true`; the id from another client or for another close is refused (409); past `retention_deleted_days` the receipt is a tombstone and a replay is refused as expired (410) |
+| Bootstrap | the 500-token budget is 2,000 bytes on the wire: the REST body, or the whole JSON-RPC reply over MCP; an item that does not fit is left out, the first included, and `left_out` counts them. A namespace is at most 160 characters, `topics` at most 8 of 1-40 characters; a base that does not fit is refused |
 
 ## Anchors
 
 | Anchor | Checked by | Where |
 |---|---|---|
 | `entity:` | the add-on's sweep, every `anchor_sweep_hours`, and `memory_anchor_sweep` | the add-on, against Home Assistant's states through the Supervisor |
-| `path:` | a client that can see the path, through `memory_anchor_report`; on desktop, ha-management's `tools/memory_anchor_sweep.py --hook` at every Claude Code SessionStart | the host holding the path |
+| `path:` | a client that can see the path, through `memory_anchor_report`; on desktop, ha-management's `tools/memory_anchor_sweep.py --hook` at every Claude Code SessionStart, which resolves a relative path against the checkout of the record's repository namespace and reports `unavailable` when it has none | the host holding the path |
 | `host:` | a client, through `memory_anchor_report` | any host on the LAN |
 | `url:` | a client, through `memory_anchor_report` | any host that can reach the URL |
 
 Each anchor keeps its last definitive state, `unchecked`, `ok` or `missing`, and `unavailable_since`
 while its checker could not look. A report of `unavailable` keeps the state and files nothing. A
-change between `ok` and `missing` files one observation on the record. A record with a missing anchor
+change between `ok` and `missing` files one observation on the record. A change of state advances the
+record's revision; `memory_anchors` lists each anchor with its record's namespace. A record with a missing anchor
 carries `missing_anchors` in search, get, timeline, bootstrap and project context.
 
 ## Embedding retrieval
@@ -172,6 +174,7 @@ deletion. Quotes pass the same secret screen as a store.
 Claude Code, user scope: `claude mcp add --scope user --transport http agent-memory http://192.0.2.10:8765/mcp`.
 Codex (`~/.codex/config.toml`): `[mcp_servers.agent_memory]` with `url = "http://192.0.2.10:8765/mcp"`.
 A client authenticating by token adds `Authorization: Bearer <token>` and its sha256 to the options.
+`tools/retrieval-eval/fetch.py` sends `AGENT_MEMORY_TOKEN_CLAUDE` (`--codex`: `AGENT_MEMORY_TOKEN_CODEX`), read from the process environment, then the Windows user environment.
 
 ## Develop
 

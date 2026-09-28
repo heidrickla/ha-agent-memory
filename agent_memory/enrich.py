@@ -4,9 +4,10 @@ A session_close with notes leaves an `extract` job. The worker sends the redacte
 the configured model and stores what comes back as `candidate` records, never `active`:
 a person or an agent promotes a candidate with memory_update. Everything the worker does is
 bounded and checked: the payload is cut and redacted, the reply must be JSON of the agreed
-shape, each candidate passes the same secret screen as a direct store, and a job is marked
-done only after its candidates are written, with the job id on each so a retry after a
-crash stores nothing twice. The server offline means jobs wait and health reads degraded.
+shape, each candidate passes the same secret screen as a direct store, and a job's candidates
+and its completion commit in one transaction, with the job id on each, so a retry after a
+crash stores nothing twice and loses nothing. The server offline means jobs wait and health
+reads degraded.
 
 The server is Ollama's native API, or an OpenAI-style one (llama-server, llama-swap) when the
 URL ends in `/v1`.
@@ -335,17 +336,20 @@ class Worker:
         model, reply = self._try_models("extract", extract_with)
         candidates = parse_candidates(reply)
         stored = 0
-        for c in candidates:
-            try:
-                self.store.store_candidate(
-                    {**c, "namespace": job["namespace"], "agent": self.label(model), "source_session": payload.get("session", ""), "enrichment": tag},
-                    client="enrichment",
-                )
-                stored += 1
-            except Rejected as err:  # one refused candidate costs itself, not the job
-                LOG.warning("extract job %s: candidate refused: %s", job["id"][:8], err)
-        self.store.job_done(job["id"], model)
-        self.store.audit("enrichment", "extract", job["namespace"], payload.get("summary_id", ""), f"{stored} candidates, model {model}")
+        # The accepted candidates and the job's completion commit together: an interruption leaves the
+        # job queued with none of its candidates, and the retry extracts again.
+        with self.store.transaction():
+            for c in candidates:
+                try:
+                    self.store.store_candidate(
+                        {**c, "namespace": job["namespace"], "agent": self.label(model), "source_session": payload.get("session", ""), "enrichment": tag},
+                        client="enrichment",
+                    )
+                    stored += 1
+                except Rejected as err:  # one refused candidate costs itself, not the job
+                    LOG.warning("extract job %s: candidate refused: %s", job["id"][:8], err)
+            self.store.job_done(job["id"], model)
+            self.store.audit("enrichment", "extract", job["namespace"], payload.get("summary_id", ""), f"{stored} candidates, model {model}")
         LOG.info("extract job %s for %s: %d candidates, model %s", job["id"][:8], job["namespace"], stored, model)
         return stored
 
@@ -383,9 +387,10 @@ class Worker:
             raise ValueError("answer refused by the secret screen")
         # The prompt asks for brevity; this enforces it. A model that ignores the sentence cap gets
         # cut rather than stored at whatever length it chose.
-        self.store.set_answer(q["id"], reply[:ANSWER_CHARS], self.label(model), [r["id"] for r in sources], basis)
-        self.store.job_done(job["id"], model)
-        self.store.audit("enrichment", "answer", q["namespace"], q["id"], f"{len(sources)} sources, model {model}")
+        with self.store.transaction():
+            self.store.set_answer(q["id"], reply[:ANSWER_CHARS], self.label(model), [r["id"] for r in sources], basis)
+            self.store.job_done(job["id"], model)
+            self.store.audit("enrichment", "answer", q["namespace"], q["id"], f"{len(sources)} sources, model {model}")
         LOG.info("answer job %s for %s: %d sources, model %s", job["id"][:8], q["namespace"], len(sources), model)
         return 1
 

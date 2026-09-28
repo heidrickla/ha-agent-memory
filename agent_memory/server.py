@@ -34,6 +34,15 @@ from store import Store
 
 LOG = logging.getLogger("agent-memory")
 INGRESS_NETS = ("172.30.32.", "172.30.33.")  # Home Assistant's ingress proxy addresses
+# REST reads and the tool whose scope each needs: the same rule as the MCP tool.
+REST_GET = {
+    "/api/bootstrap": "memory_bootstrap",
+    "/api/search": "memory_search",
+    "/api/get": "memory_get",
+    "/api/timeline": "memory_timeline",
+    "/api/context": "memory_project_context",
+    "/api/namespaces": "memory_timeline",
+}
 
 
 def load_options(path: str) -> dict:
@@ -166,7 +175,7 @@ def make_handler(app: App):
             ident = app.auth.identify(self.headers.get("Authorization"), peer)
             if ident is None:
                 app.denied += 1
-                app.store.audit(peer, "denied", detail=self.path[:80])
+                app.store.audit(peer, "denied", detail=self.path)  # masked whole, then cut, by audit
             return ident
 
         def _ingress(self) -> bool:
@@ -197,6 +206,15 @@ def make_handler(app: App):
                 self._send(404, b"not found\n", "text/plain; charset=utf-8")
 
         def _api_get(self, path: str, q: dict, ident: tuple[str, set[str], bool]) -> None:
+            name, scopes, _ = ident
+            tool = REST_GET.get(path)
+            if tool is None:
+                self._json(404, {"error": "no such endpoint"})
+                return
+            needed = mcp.TOOL_SCOPE[tool]
+            if not mcp.permits(scopes, needed):
+                self._json(403, {"error": f"client {name!r} lacks the {needed!r} scope"})
+                return
             one = {k: v[0] for k, v in q.items()}
             try:
                 if path == "/api/bootstrap":
@@ -241,7 +259,7 @@ def make_handler(app: App):
                 needed = mcp.TOOL_SCOPE.get(tool)
                 if needed is None:
                     self._json(404, {"error": "no such endpoint"})
-                elif needed not in scopes and "admin" not in scopes:
+                elif not mcp.permits(scopes, needed):
                     self._json(403, {"error": f"client {name!r} lacks the {needed!r} scope"})
                 else:
                     try:

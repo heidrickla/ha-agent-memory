@@ -437,9 +437,11 @@ def test_the_receipt_commits_with_the_close_or_not_at_all(tmp_path, monkeypatch)
     assert "replayed" not in done and count(app.store) == 1
 
 
-def test_receipts_age_out_with_the_retention(store):
+def test_receipts_past_the_retention_become_tombstones(store):
     store.put_receipt("op-old-0000001", "desk", "session_close", "d", {"stored": "x"})
     store.db.execute("update receipts set at='2000-01-01T00:00:00+00:00'")
     store.put_receipt("op-new-0000001", "desk", "session_close", "d", {"stored": "y"})
     store.purge(30)
-    assert store.receipt("op-old-0000001") is None and store.receipt("op-new-0000001")["result"] == {"stored": "y"}
+    old = store.receipt("op-old-0000001")
+    assert old["expired"] and old["result"] == {} and old["digest"] == "d"
+    assert not store.receipt("op-new-0000001")["expired"] and store.receipt("op-new-0000001")["result"] == {"stored": "y"}

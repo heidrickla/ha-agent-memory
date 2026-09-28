@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.11.0
+
+- REST reads check scope by the MCP rule: `GET /api/bootstrap`, `search`, `get`, `timeline`, `context` and `namespaces` need `read` (or `admin`); a client without it gets 403.
+- A session-close receipt is bound to the client that sent it and to every input: client, agent, namespace, summary, session, notes and `enrich`. The same `op_id` from another client, or with another input, is refused (409). Past `retention_deleted_days` a receipt keeps its id, client and digest as a tombstone, and a replay of it is refused as expired (410), never run again.
+- Every write to the database passes the secret screen, whichever method makes it; a hit refuses the write and names the table and pattern. Audit rows are kept with any value carrying a secret replaced by `[screened:<pattern>]`, judged on the whole value before it is cut. A search or project-context query that screens is counted as `[redacted]`; one from a namespace that screens is not recorded. A standing question's text and namespace are screened like a record's fields, and so is a job's namespace. A job's `last_error` is masked.
+- Session notes are checked for `do-not-store` as sent, before redaction or the 12,000-character cut.
+- A URL anchor's query and fragment parameters are judged by name, split into words: `access_token`, `apiKey`, `X-Amz-Signature`, `session_id`, `key`, `auth` are refused; `author`, `session_count`, `sort_key` are kept.
+- One transaction each: an anchor report (previous state, update, evidence, revision); an extraction job's candidates and its completion; an answer and its job's completion; a purge. An anchor state change advances the record's revision; a check that finds the state unchanged moves only `last_checked`.
+- Every statement runs under the store lock with its rows fetched in full, and reads that hydrate records hold the lock throughout, so no read sees a transaction another thread holds open.
+- The bootstrap budget (2,000 bytes) is measured on the wire: the REST body, or the whole JSON-RPC reply with its escaped text for an MCP call. A namespace is at most 160 characters; `topics` at most 8, each 1-40 of `A-Za-z0-9_.-`. A bootstrap whose namespace and scopes alone exceed the budget is refused.
+- `memory_anchors` returns each record's `namespace`, so a checker can resolve a relative `path:` anchor against that repository's checkout.
+
 ## 0.10.1
 
 - memory_update accepts the revision as a string of digits. A client holding the tool list from before 0.10.0 has no revision property and sends the value as a string; it was refused as not an integer.
