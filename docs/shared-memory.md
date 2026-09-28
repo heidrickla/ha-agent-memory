@@ -41,7 +41,7 @@ A preference the owner states becomes a rule in `AGENTS.md` when it binds both a
 | 1. Write | `memory_store` / `memory_update` over MCP, carrying `agent`, `source_session`, `repository` (fields exist today) |
 | 2. Screen | the existing credential screen refuses a secret before anything is stored |
 | 3. Duplicate check (new) | before insert, the nearest records by embedding (FTS when the encoder is away) are compared; above a threshold the tool answers with the likely duplicate and requires `supersedes: <id>` or `new: true`. Threshold set on labelled pairs, not guessed |
-| 4. Status | direct writes land `active` (today's behaviour), extraction from `memory_session_close` lands `candidate` and waits for review (today's behaviour). OPEN: whether direct writes of `preference` and `constraint` should also be candidates |
+| 4. Status | direct writes land `active` (today's behaviour), and a preference the owner states is written `active` with no review (the owner, 2026-09-28: "directly written preferences I give don't need review"); extraction from `memory_session_close` lands `candidate` and waits for review (today's behaviour) |
 | 5. Concurrency (new) | `memory_update` takes the record's `updated_at` as read; a mismatch is refused with the current version, so two agents cannot overwrite each other silently |
 | 6. Outbox (new) | when the service cannot be reached, a local `outbox.jsonl` (under the user's local app data) takes the write with a client-generated id; the SessionStart hook flushes it when the service answers; the id makes a replay idempotent |
 
@@ -55,7 +55,7 @@ The queue that exists today (session close, then an extraction job on the local 
 | Claude memory, `project` (14) | ongoing work, decisions | `architectural-decision`, `next-step`, `repository-fact`, in the repository's namespace | no |
 | Claude memory, `reference` (7) | pointers to systems | `repository-fact` or `operational-procedure` | no |
 | Claude memory, `user` (4) | who the owner is | `preference`, global | yes |
-| Codex memories | generated task summaries | durable items only, through extraction as candidates; task-scoped summaries are not imported | no |
+| Codex memories | generated task summaries | durable items only, imported as candidates and reviewed before they become active (the owner, 2026-09-28: "Codex's memories should be reviewed before imported"); task-scoped summaries are not imported | no |
 
 Every migrated record carries `migrated from <store> <file>` and the date. Items already moved to `AGENTS.md` or `records/` on 2026-09-28 are linked, not duplicated.
 
@@ -87,9 +87,12 @@ Every migrated record carries `migrated from <store> <file>` and the date. Items
 
 SQLite with FTS5 and a float32 embeddings table, in the add-on. Measured 2026-09-28: bootstrap over the LAN 4-6 ms; reading all 72 Claude memory files 9 ms; one model turn several seconds. A separate database server (Redis, Postgres) would save milliseconds and add a service to run; retrieval quality and tokens in context are what matter.
 
+## Decided
+
+- Preferences the owner states are written `active` with no review (the owner, 2026-09-28).
+- Codex memories are reviewed before import: durable items come in as candidates (the owner, 2026-09-28).
+
 ## Open
 
 1. Pinned budget size.
-2. Direct writes of preferences and constraints: `active` or `candidate`.
-3. Who reviews candidates: the agent at session start, or the owner.
-4. Codex memories: import durable items, or let them lapse.
+2. Who reviews candidates: the agent at session start, or the owner.
