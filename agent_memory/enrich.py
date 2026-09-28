@@ -242,6 +242,7 @@ class Worker:
             self.store.job_done(job["id"], self.ollama.model)
             return 0
         notes = redact(str(payload.get("notes", ""))[:NOTES_LIMIT])
+
         # A reply that will not parse is this job's characteristic failure, and it is a property of
         # the model, so it costs the next model in the chain rather than the job.
         def extract_with(model: str) -> str:

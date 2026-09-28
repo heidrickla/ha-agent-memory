@@ -143,7 +143,90 @@ def tokens(text: str) -> int:
 
 
 STOPWORDS = frozenset(
-    ["a", "an", "the", "is", "are", "was", "were", "be", "been", "do", "does", "did", "what", "which", "who", "whom", "whose", "where", "when", "why", "how", "of", "for", "to", "in", "on", "at", "by", "with", "from", "about", "into", "over", "and", "or", "not", "no", "yes", "it", "its", "this", "that", "these", "those", "i", "we", "you", "they", "he", "she", "our", "your", "their", "my", "me", "us", "any", "some", "can", "could", "should", "would", "will", "there", "here", "as", "if", "then", "than", "so", "such", "have", "has", "had", "get", "got", "need", "want", "know", "tell", "show", "find"]
+    [
+        "a",
+        "an",
+        "the",
+        "is",
+        "are",
+        "was",
+        "were",
+        "be",
+        "been",
+        "do",
+        "does",
+        "did",
+        "what",
+        "which",
+        "who",
+        "whom",
+        "whose",
+        "where",
+        "when",
+        "why",
+        "how",
+        "of",
+        "for",
+        "to",
+        "in",
+        "on",
+        "at",
+        "by",
+        "with",
+        "from",
+        "about",
+        "into",
+        "over",
+        "and",
+        "or",
+        "not",
+        "no",
+        "yes",
+        "it",
+        "its",
+        "this",
+        "that",
+        "these",
+        "those",
+        "i",
+        "we",
+        "you",
+        "they",
+        "he",
+        "she",
+        "our",
+        "your",
+        "their",
+        "my",
+        "me",
+        "us",
+        "any",
+        "some",
+        "can",
+        "could",
+        "should",
+        "would",
+        "will",
+        "there",
+        "here",
+        "as",
+        "if",
+        "then",
+        "than",
+        "so",
+        "such",
+        "have",
+        "has",
+        "had",
+        "get",
+        "got",
+        "need",
+        "want",
+        "know",
+        "tell",
+        "show",
+        "find",
+    ]
 )
 
 
@@ -550,9 +633,7 @@ class Store:
         marks = ",".join("?" for _ in statuses)
         return f"deleted_at is null and status in ({marks}) and (expires_at is null or expires_at > '{now_iso()}')"
 
-    def search(
-        self, query: str, scopes: list[str], limit: int = 20, statuses: tuple[str, ...] = ("active",), types: tuple[str, ...] = (), reach: tuple[str, ...] = ()
-    ) -> list[dict]:
+    def search(self, query: str, scopes: list[str], limit: int = 20, statuses: tuple[str, ...] = ("active",), types: tuple[str, ...] = (), reach: tuple[str, ...] = ()) -> list[dict]:
         """Ranked hits: FTS relevance times scope, type and confidence weights. Snippets, not records.
 
         `reach` namespaces are searched too at weight 1.0, below every scope, so adding them
@@ -641,7 +722,10 @@ class Store:
                 cur = self.db.execute("delete from questions where substr(namespace, 1, ?) = ?", (n, old))
                 moved["questions.duplicates_dropped"] = cur.rowcount
                 if any(moved.values()):
-                    self.db.execute("insert into audit(at, client, action, namespace, record_id, detail) values (?,?,?,?,?,?)", (now_iso(), client, "rename-namespaces", new, "", json.dumps({"from": old, "to": new, **moved})))
+                    self.db.execute(
+                        "insert into audit(at, client, action, namespace, record_id, detail) values (?,?,?,?,?,?)",
+                        (now_iso(), client, "rename-namespaces", new, "", json.dumps({"from": old, "to": new, **moved})),
+                    )
                 self.db.execute("commit")
             except Exception:
                 self.db.execute("rollback")

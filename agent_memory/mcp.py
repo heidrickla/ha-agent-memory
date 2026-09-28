@@ -99,9 +99,7 @@ class Memory:
             "note": NOTE,
         }
 
-    def search(
-        self, namespace: str, query: str, topics: list[str] | None = None, limit: int = 12, include_candidates: bool = False, types: list[str] | None = None, client: str = ""
-    ) -> dict:
+    def search(self, namespace: str, query: str, topics: list[str] | None = None, limit: int = 12, include_candidates: bool = False, types: list[str] | None = None, client: str = "") -> dict:
         scopes = self.scopes(namespace, topics)
         reach = self.reach(namespace, scopes)
         statuses = ("active", "candidate") if include_candidates else ("active",)

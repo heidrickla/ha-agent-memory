@@ -75,8 +75,12 @@ def test_an_owner_rename_moves_every_namespace_under_it_once(store):
 
     moved = store.rename_namespaces(old, new, "desk")
     assert moved == {
-        "memories.namespace": 2, "memories.repository": 1, "jobs.namespace": 1, "queries.namespace": 1,
-        "questions.namespace": 1, "questions.duplicates_dropped": 1,
+        "memories.namespace": 2,
+        "memories.repository": 1,
+        "jobs.namespace": 1,
+        "queries.namespace": 1,
+        "questions.namespace": 1,
+        "questions.duplicates_dropped": 1,
     }
     assert store.get(a["id"])["namespace"] == "gitea/heidrickla/ha-management"
     assert store.get(a["id"])["repository"] == "gitea/heidrickla/ha-management"

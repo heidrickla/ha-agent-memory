@@ -85,7 +85,7 @@ def test_reading_an_answer_calls_no_model_and_runs_no_search(store):
     mem = mcp_mod.Memory(store, OPTIONS)
     calls = []
     real_search = store.search
-    store.search = lambda *a, **k: (calls.append(a) or real_search(*a, **k))
+    store.search = lambda *a, **k: calls.append(a) or real_search(*a, **k)
     out = mem.answer(NS, "what host is the HA VM on?")
     store.search = real_search
     assert out["answered"] is True and "Prod-5" in out["answer"]
