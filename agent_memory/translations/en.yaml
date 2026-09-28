@@ -41,3 +41,12 @@ configuration:
   ollama_timeout_s:
     name: Model call timeout (s)
     description: One model call's limit.
+  embed_url:
+    name: Encoder URL
+    description: Optional. An OpenAI-style /v1 base URL serving embeddings (http://host:8080/v1). With it set, search ranks by embedding similarity whenever the encoder answers and falls back to full-text search when it does not. Absent means off.
+  embed_model:
+    name: Encoder model
+    description: The embedding model's name on that server.
+  embed_timeout_s:
+    name: Query embedding timeout (s)
+    description: How long a search waits for its query's vector before answering from full-text search.

@@ -2,7 +2,8 @@
 
 Home Assistant add-on: one shared, bounded memory for Claude Code, Codex and other agents,
 so a session starts from what earlier sessions learned instead of re-reading the repository.
-Canonical storage and retrieval never depend on a paid model or on a model server.
+Canonical storage and retrieval never depend on a paid model or on a model server: an encoder,
+when configured, improves ranking and search answers from full-text search whenever it does not.
 
 From the plan `Shared Agent Memory on Home Assistant` (2026-09-19): phases 1 to 4 are built here:
 storage, namespaces, FTS5 retrieval, progressive MCP tools, HA packaging, and enrichment through a
@@ -15,6 +16,7 @@ active until promoted, a job done only after its records are written).
 | Agent interface | MCP over streamable HTTP with JSON responses: `POST http://<ha>:8765/mcp`; the same tools as REST under `/api/` |
 | Namespaces | `github/<owner>/<repo>` and `gitea/<owner>/<repo>` from git remotes (other owners are refused), `projects/<name>`, `topics/<name>`, `global`, `local/<name>` |
 | Retrieval order | repository, its linked projects, given topics, global; a hub's search and task match then reach every other repository namespace |
+| Ranking | cosine over record embeddings when the encoder answers, FTS5 otherwise ([Embedding retrieval](#embedding-retrieval)) |
 | Budgets | bootstrap 500 tokens, search 750, records 2000, packet 4000 (hard limit 8000); every response reports its estimate and truncation |
 | Auth | per-client bearer token (sha256 in options) or source address; scopes read, write, delete, export, admin |
 | Filtering | credentials, key material, JWTs, URL passwords and the `do-not-store` marker are refused and audited by pattern name |
@@ -29,6 +31,39 @@ active until promoted, a job done only after its records are written).
 `project_context(namespace, task)` for one bounded packet with a reason per record.
 `bootstrap` lists active records and counts candidates in `candidates_pending`; `memory_timeline`
 lists candidates for review, `memory_update` promotes one, `memory_forget` drops it.
+
+## Embedding retrieval
+
+`embed_url` names an OpenAI-style `/v1` server with an embedding model. On the frozen eval
+(`tools/retrieval-eval/`, 72 queries over 24 records) cosine alone scored MRR 0.94 against FTS5's
+0.83; paraphrases went from 0.60 to 0.86.
+
+| | |
+|---|---|
+| Used when | the encoder answered its last probe, the query's vector arrives within `embed_timeout_s`, and every record the search could return has a current vector |
+| Otherwise | FTS5, unchanged; `ranking` in the response says which answered |
+| Records ranked | every live record in the scopes and hub reach, the same set full-text search reads; cosine alone, ties to the lower id |
+| Query text | `Instruct: Given a web search query, retrieve relevant passages that answer the query\nQuery:` then the query |
+| Record text | `title\ncontent`, no instruction |
+| Storage | table `embeddings(record_id, digest, model, vector)`, float32; `digest` is sha256 of model, snapshot and text |
+| Stale | an edit, another model or another snapshot changes the digest; search uses FTS until the worker re-embeds |
+| Worker | embeds missing and stale records at start and after each store or edit; probes the encoder every 30 s |
+| Snapshot | the last path segment of `root` in the server's `/v1/models`, or from llama-swap's `/upstream/<model>/v1/models` |
+| Removed | `memory_forget` and purge drop the vector |
+| Not sent | a query that screens as carrying a secret |
+| Not affected | the demand signal counts FTS hits; standing answers take FTS sources |
+
+A miss on a query's vector marks the encoder down until the next probe, so a dead encoder costs one
+search `embed_timeout_s` and later searches nothing.
+
+```yaml
+embed_url: http://192.0.2.20:8080/v1
+embed_model: qwen3-emb-0.6b
+embed_timeout_s: 2
+```
+
+Measure a retrieval change offline before shipping it: `python tools/retrieval-eval/eval.py . --embeddings tools/retrieval-eval/embeddings.json`
+ranks the frozen queries through `agent_memory/embed.py` with the vectors `embed_eval.py` fetched.
 
 ## Standing questions
 

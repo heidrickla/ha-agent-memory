@@ -87,6 +87,14 @@ create table if not exists questions (
   status text not null default 'active', asked integer not null default 0
 );
 create unique index if not exists questions_key on questions(namespace, norm);
+create table if not exists embeddings (
+  record_id text primary key, digest text not null, model text not null, vector blob not null
+);
+"""
+"""`embeddings` holds one float32 vector per record for embedding retrieval (`embed.py`).
+
+`digest` is sha256 of model, snapshot and the embedded text, so an edited record or a changed model
+reads as stale by a string comparison and search falls back to FTS until the worker re-embeds it.
 """
 """`questions` holds a standing answer per question, so reading settled knowledge is a database read.
 
@@ -261,6 +269,8 @@ class Store:
         self.db.execute("pragma synchronous=normal")
         self.db.executescript(SCHEMA)
         self.fts = self._index(FTS, "memories_fts", "porter")
+        # Set on every write that can change a record's text; the embedding worker waits on it.
+        self.changed = threading.Event()
 
     def _index(self, ddl: str, table: str, tokenizer: str) -> bool:
         """Create the full-text index, or rebuild one made with another tokenizer. False when this
@@ -378,6 +388,7 @@ class Store:
                 self.db.execute("update memories set status='superseded', updated_at=? where id=? and status='active'", (ts, rec["supersedes"]))
         self.set_anchors(rid, rec.get("anchors") or [])
         self.audit(client, "store", rec["namespace"], rid, rec.get("type") or "")
+        self.changed.set()
         return self.get(rid)
 
     @staticmethod
@@ -458,6 +469,7 @@ class Store:
         if cur.rowcount == 0:
             return None
         self.audit(client, "update", record_id=rid, detail=",".join(sorted(k for k in changes if k in allowed)))
+        self.changed.set()
         return self.get(rid)
 
     def forget(self, rid: str, client: str, hard: bool = False) -> bool:
@@ -466,6 +478,8 @@ class Store:
                 cur = self.db.execute("delete from memories where id=?", (rid,))
             else:
                 cur = self.db.execute("update memories set deleted_at=?, status='deleted' where id=? and deleted_at is null", (now_iso(), rid))
+            if cur.rowcount:
+                self.db.execute("delete from embeddings where record_id=?", (rid,))
         if cur.rowcount:
             self.audit(client, "forget_hard" if hard else "forget", record_id=rid)
         return bool(cur.rowcount)
@@ -474,8 +488,19 @@ class Store:
         cutoff = (dt.datetime.now(dt.UTC) - dt.timedelta(days=deleted_days)).isoformat(timespec="seconds")
         with self.lock:
             cur = self.db.execute("delete from memories where deleted_at is not null and deleted_at < ?", (cutoff,))
+            # A vector outlives nothing it was made from: purged, forgotten or never-live records lose theirs.
+            self.db.execute("delete from embeddings where record_id not in (select id from memories where deleted_at is null)")
             # Queries age out on the same clock. They are a demand signal, not a record.
             self.db.execute("delete from queries where at < ?", (cutoff,))
+        return cur.rowcount
+
+    def put_embedding(self, rid: str, digest: str, model: str, vector: bytes) -> int:
+        """Store one record's vector, replacing its previous one. 0 when the record is gone by now."""
+        with self.lock:
+            cur = self.db.execute(
+                "insert or replace into embeddings(record_id, digest, model, vector) select ?, ?, ?, ? where exists (select 1 from memories where id=? and deleted_at is null)",
+                (rid, digest, model, vector, rid),
+            )
         return cur.rowcount
 
     def note_query(self, namespace: str, client: str, kind: str, query: str, hits: int, top_rank: float) -> None:

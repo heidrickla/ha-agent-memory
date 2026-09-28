@@ -1,5 +1,5 @@
 name: Agent Memory
-version: "0.8.1"
+version: "0.9.0"
 slug: agent_memory
 description: Shared, bounded context for Claude Code and Codex over MCP; SQLite and FTS5, no paid model in the path
 url: https://github.com/heidrickla/ha-agent-memory
@@ -56,6 +56,8 @@ options:
   retention_deleted_days: 30
   ollama_model: qwen3.5:9b
   ollama_timeout_s: 120
+  embed_model: qwen3-emb-0.6b
+  embed_timeout_s: 2
 schema:
   clients:
     - name: str
@@ -85,3 +87,6 @@ schema:
   ollama_models:
     - str?
   ollama_timeout_s: int(10,900)?
+  embed_url: url?
+  embed_model: str?
+  embed_timeout_s: float(0.2,30)?

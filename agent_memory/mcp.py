@@ -11,6 +11,7 @@ import json
 import time
 from collections.abc import Callable
 
+import embed
 from filters import redact, screen
 from namespaces import is_repository, normalize_remote, scopes_for, valid_namespace
 from store import TYPES, Store, tokens
@@ -34,6 +35,13 @@ class Memory:
         self.packet_budget = int(options.get("context_budget_tokens") or 4000)
         self.entity_ids: Callable[[], set[str]] | None = None
         self.last_sweep: dict = {}
+        self.encoder: embed.Encoder | None = None  # set by the app when embed_url is configured
+
+    def _retrieve(self, query: str, scopes: list[str], limit: int, statuses: tuple[str, ...], types: tuple[str, ...], reach: tuple[str, ...]) -> tuple[list[dict], str, list[dict]]:
+        """Cosine when the encoder answers, else FTS (`embed.retrieve`). A query that screens as carrying a
+        secret is not sent to the encoder."""
+        encoder = None if screen(query) else self.encoder
+        return embed.retrieve(self.store, encoder, query, scopes, limit, statuses, types, reach)
 
     # ------------------------------------------------------------ helpers
     def scopes(self, namespace: str, topics: list[str] | None = None) -> list[str]:
@@ -103,12 +111,14 @@ class Memory:
         scopes = self.scopes(namespace, topics)
         reach = self.reach(namespace, scopes)
         statuses = ("active", "candidate") if include_candidates else ("active",)
-        hits = self.store.search(query, scopes, limit=max(1, min(int(limit), 50)), statuses=statuses, types=tuple(types or ()), reach=tuple(reach))
+        hits, ranking, fts = self._retrieve(query, scopes, max(1, min(int(limit), 50)), statuses, tuple(types or ()), tuple(reach))
         # What was asked, and how well it came back. A query can carry a secret as easily as a
         # record can, so it passes the same screen; a screened query is counted, never quoted.
-        self.store.note_query(namespace, client, "search", "[redacted]" if screen(query) else query, len(hits), hits[0]["rank"] if hits else 0.0)
+        # The count is FTS's whichever ranking answered: cosine returns the nearest records whether or
+        # not any of them answers, so its count would call every question answered.
+        self.store.note_query(namespace, client, "search", "[redacted]" if screen(query) else query, len(fts), fts[0]["rank"] if fts else 0.0)
         packed, truncated, used = self._pack([self._snippet(h) for h in hits], BUDGETS["search"], ("id", "namespace", "type", "title", "snippet", "confidence", "status", "why"))
-        return {"query": query, "scopes": scopes, "reach": reach, "hits": packed, "approx_tokens": used, "truncated": truncated, "note": NOTE}
+        return {"query": query, "scopes": scopes, "reach": reach, "ranking": ranking, "hits": packed, "approx_tokens": used, "truncated": truncated, "note": NOTE}
 
     def answer(self, namespace: str, question: str) -> dict:
         """A standing answer, read from the database. Never retrieves, never calls a model.
@@ -297,15 +307,28 @@ class Memory:
         add(self.store.by_namespace(scopes[:1], ("constraint", "architectural-decision"), limit=10), "constraint or decision in the repository scope")
         # A hub's reach widens the task match only; open work and procedures stay in scope.
         reach = self.reach(namespace, scopes)
+        ranking = None
         if task.strip():
-            add(self.store.search(task, scopes, limit=15, reach=tuple(reach)), "matches the task")
+            rows, ranking, _ = self._retrieve(task, scopes, 15, ("active",), (), tuple(reach))
+            add(rows, "matches the task" if ranking == "fts" else "nearest to the task by embedding")
         add(self.store.by_namespace(scopes, ("open-question", "next-step"), limit=6), "open work")
         add(self.store.by_namespace(scopes, ("failure-and-fix", "operational-procedure"), limit=6), "known failure or procedure")
         packed, truncated, used = self._pack(selected, budget, ("id", "namespace", "type", "title", "content", "confidence", "why"))
         # A task asked for repeatedly is an information need whether or not anyone phrased it as a
         # question, so it counts towards the same demand signal as a search.
         self.store.note_query(namespace, client, "context", "[redacted]" if screen(task) else task, len(packed), 0.0)
-        return {"namespace": namespace, "task": task, "scopes": scopes, "reach": reach, "records": packed, "approx_tokens": used, "budget": budget, "truncated": truncated, "note": NOTE}
+        return {
+            "namespace": namespace,
+            "task": task,
+            "scopes": scopes,
+            "reach": reach,
+            "ranking": ranking,
+            "records": packed,
+            "approx_tokens": used,
+            "budget": budget,
+            "truncated": truncated,
+            "note": NOTE,
+        }
 
     def export(self, out_dir: str, client: str) -> dict:
         res = self.store.export(out_dir)
@@ -326,7 +349,7 @@ TOOLS = [
     ),
     (
         "memory_search",
-        "Ranked titles and snippets with ids for a query in the namespace's scopes; full records come from memory_get.",
+        "Ranked titles and snippets with ids for a query in the namespace's scopes; full records come from memory_get. Ranked by embedding similarity when the encoder answers, else full-text; `ranking` says which.",
         {
             "namespace": {"type": "string"},
             "query": {"type": "string"},

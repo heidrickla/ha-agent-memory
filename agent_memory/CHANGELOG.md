@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.9.0
+
+- Embedding retrieval. With `embed_url` set, `memory_search` and the task match in `memory_project_context` rank by cosine alone over every live record in the same scopes and hub reach as full-text search, whenever the encoder answers and every one of those records has a current vector. Otherwise they answer from FTS5 exactly as before. Responses carry `ranking`: `cosine` or `fts`.
+- Measured on the frozen eval (72 queries, 24 records): MRR 0.83 with FTS5, 0.94 with cosine over Qwen3-Embedding-0.6B (K 0.96 to 1.00, M 0.93 to 0.98, P 0.60 to 0.86). `tools/retrieval-eval/eval.py --embeddings` reproduces 0.94 through this code with the measured vectors.
+- New options: `embed_url` (absent is off), `embed_model` (default `qwen3-emb-0.6b`), `embed_timeout_s` (default 2). A search waits at most `embed_timeout_s` for its query's vector; a miss marks the encoder down until the next probe, so later searches do not wait at all.
+- Texts are the offline test's: a query carries the model card's retrieval instruction, a record is `title\ncontent`.
+- Vectors live in a new `embeddings` table, one float32 vector per record with a digest of model, snapshot and text. A worker thread embeds missing and stale records at start and after every store or edit, and probes the encoder every 30 s. The snapshot is read from the server's model listing, or through llama-swap's `/upstream/<model>/` passthrough. `memory_forget` and purge drop the vector.
+- The demand signal behind `memory_questions` still counts FTS hits: cosine returns the nearest records whether or not any answers. Standing answers keep FTS sources, so their basis does not move with the encoder's availability.
+- A query that screens as carrying a secret is not sent to the encoder.
+- `/health` gains `embeddings`: encoder state, model, snapshot, records and how many have a current vector. The encoder never changes `status`.
+
 ## 0.8.1
 
 - Extraction on the OpenAI-style client asks for `response_format` `json_schema` (an object requiring a `memories` array). The PrismML llama.cpp fork does not enforce `json_object`: on a 9-character note it wrapped 11 of 12 replies in a ```` ```json ```` fence, each fence cost an attempt, and one job gave up after 5. With the schema, 0 of 12.

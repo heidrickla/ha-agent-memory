@@ -24,6 +24,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlsplit
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import embed
 import enrich
 import mcp
 import page
@@ -94,6 +95,10 @@ class App:
         self.auth = Auth(options.get("clients") or [])
         self.export_dir = os.path.join(data_dir, "exports")
         self.worker = enrich.Worker(self.store, options)
+        # Embedding retrieval, when embed_url is set; search falls back to FTS whenever it cannot use it.
+        self.encoder = embed.encoder_from(options)
+        self.memory.encoder = self.encoder
+        self.indexer = embed.Indexer(self.store, self.encoder) if self.encoder else None
         self.started = time.time()
         self.requests = 0
         self.denied = 0
@@ -112,6 +117,8 @@ class App:
             "db_bytes": stats["db_bytes"],
             "jobs": stats["jobs"],
             "enrichment": enrichment,
+            # Not part of `status`: search answers from FTS whenever the encoder does not.
+            "embeddings": self.indexer.state() if self.indexer else {"encoder": "off"},
             "anchor_sweep": self.memory.last_sweep or {"at": None},
             "requests": self.requests,
             "denied": self.denied,
@@ -283,7 +290,10 @@ def main(argv: list[str] | None = None) -> int:
     threading.Thread(target=housekeeping, args=(app, stop), name="housekeeping", daemon=True).start()
     threading.Thread(target=app.worker.loop, args=(stop,), name="enrichment", daemon=True).start()
     threading.Thread(target=anchor_sweeps, args=(app, stop), name="anchors", daemon=True).start()
-    LOG.info("serving on :%d, fts5 %s, %d clients, %d records", args.port, app.store.fts, len(app.auth.clients), app.store.stats()["memories"])
+    if app.indexer:
+        threading.Thread(target=app.indexer.loop, args=(stop,), name="embeddings", daemon=True).start()
+    embedding = f"{app.encoder.model} at {app.encoder.base}" if app.encoder else "off"
+    LOG.info("serving on :%d, fts5 %s, %d clients, %d records, embeddings %s", args.port, app.store.fts, len(app.auth.clients), app.store.stats()["memories"], embedding)
     try:
         while True:
             time.sleep(3600)
