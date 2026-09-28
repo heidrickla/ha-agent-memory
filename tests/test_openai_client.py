@@ -106,7 +106,10 @@ def test_the_extract_request_asks_for_json_with_thinking_off(v1):
     path, body = FakeOpenAI.seen[-1]
     assert path == "/v1/chat/completions"
     assert body["model"] == "bonsai2-memory" and body["stream"] is False and body["temperature"] == 0.1
-    assert body.get("response_format") == {"type": "json_object"}, "extraction must ask for JSON output"
+    fmt = body.get("response_format") or {}
+    assert fmt.get("type") == "json_schema", "json_object is not enforced by the fork; a schema is compiled to a grammar"
+    assert fmt["json_schema"]["schema"]["required"] == ["memories"]
+    assert fmt["json_schema"]["schema"]["properties"]["memories"]["type"] == "array"
     assert body.get("chat_template_kwargs") == {"enable_thinking": False}, "thinking must be off or the reply comes back empty"
     assert body["messages"][0] == {"role": "system", "content": enrich.INSTRUCTIONS}
     assert body["max_tokens"] == enrich.EXTRACT_TOKENS
@@ -144,6 +147,26 @@ def test_both_job_kinds_run_through_a_v1_server(tmp_path, v1, caplog):
     assert q["answer"] == "Card 0 serves Bonsai." and q["model"] == "openai:bonsai2-memory"
     assert any("answer job" in r.getMessage() and "bonsai2-memory" in r.getMessage() for r in caplog.records)
     assert {p for p, _ in FakeOpenAI.seen} == {"/v1/chat/completions"}
+
+
+def test_a_reply_in_one_code_fence_is_read_inside_it():
+    """Measured 2026-09-28: with `json_object` the fork fenced 11 of 12 replies to a 9-character note, each fence
+    cost an attempt, and one job gave up after 5."""
+    assert enrich.parse_candidates('```json\n{"memories": []}\n```') == []
+    assert enrich.parse_candidates("```\n" + json.dumps(GOOD) + "\n```")[0]["title"] == "One model per GPU"
+    assert enrich.parse_candidates('  ```json\n{"memories": []}```  ') == []
+    for bad in ("```json\nnot json\n```", 'Here: ```json\n{"memories": []}\n```', '```json\n{"memories": []}', ""):
+        with pytest.raises(ValueError):
+            enrich.parse_candidates(bad)
+
+
+def test_a_fenced_extraction_is_stored_not_retried(tmp_path, v1):
+    FakeOpenAI.content = "```json\n" + json.dumps(GOOD) + "\n```"
+    w = Worker(Store(str(tmp_path / "m.db")), options(v1))
+    w.store.enqueue("extract", NS, {"notes": "some notes", "session": "s1"})
+    assert w.step() is True
+    assert [c["title"] for c in w.store.by_namespace([NS], statuses=("candidate",))] == ["One model per GPU"]
+    assert w.store.db.execute("select attempts from jobs").fetchone()["attempts"] == 0
 
 
 def test_a_reply_that_is_not_a_chat_completion_costs_an_attempt_not_the_worker(tmp_path, v1):

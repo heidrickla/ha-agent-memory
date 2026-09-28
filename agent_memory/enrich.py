@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import threading
 import urllib.error
 import urllib.parse
@@ -125,6 +126,10 @@ class Ollama:
 EXTRACT_TOKENS = 2048
 ANSWER_TOKENS = 512
 
+# A schema, not `json_object`: the PrismML llama.cpp fork ignores `json_object` (11 of 12 replies to one
+# short note came back inside a ```json fence, 2026-09-28) and compiles a schema to a grammar (0 of 12).
+EXTRACT_SCHEMA = {"type": "object", "properties": {"memories": {"type": "array", "items": {"type": "object"}}}, "required": ["memories"]}
+
 
 class OpenAIChat:
     """The same two calls against an OpenAI-style server at a `/v1` base URL: `/models`, `/chat/completions`."""
@@ -154,7 +159,7 @@ class OpenAIChat:
             "messages": [{"role": "system", "content": system}, {"role": "user", "content": user}],
         }
         if json_out:
-            body["response_format"] = {"type": "json_object"}
+            body["response_format"] = {"type": "json_schema", "json_schema": {"name": "memories", "schema": EXTRACT_SCHEMA}}
         req = urllib.request.Request(f"{self.base}/chat/completions", data=json.dumps(body).encode(), headers={"Content-Type": "application/json"})
         with urllib.request.urlopen(req, timeout=self.timeout) as resp:
             doc = json.load(resp)
@@ -178,9 +183,17 @@ def client_for(url: str, model: str, timeout_s: int = 120) -> Ollama | OpenAICha
     return OpenAIChat(url, model, timeout_s) if path.endswith("/v1") else Ollama(url, model, timeout_s)
 
 
+_FENCE = re.compile(r"^```[A-Za-z]*[ \t]*\n(.*?)\n?```$", re.DOTALL)
+
+
 def parse_candidates(text: str) -> list[dict]:
-    """The model's reply as a list of well-formed candidates; a malformed reply raises ValueError."""
-    doc = json.loads(text)
+    """The model's reply as a list of well-formed candidates; a malformed reply raises ValueError.
+
+    A reply wrapped in one Markdown code fence is read inside it: a server that does not enforce the
+    requested format lets the model fence its JSON, and the JSON inside is still the answer.
+    """
+    fenced = _FENCE.match(text.strip())
+    doc = json.loads(fenced.group(1) if fenced else text)
     items = doc.get("memories") if isinstance(doc, dict) else None
     if not isinstance(items, list):
         raise ValueError("reply has no memories list")

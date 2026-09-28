@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.8.1
+
+- Extraction on the OpenAI-style client asks for `response_format` `json_schema` (an object requiring a `memories` array). The PrismML llama.cpp fork does not enforce `json_object`: on a 9-character note it wrapped 11 of 12 replies in a ```` ```json ```` fence, each fence cost an attempt, and one job gave up after 5. With the schema, 0 of 12.
+- A reply inside one Markdown code fence is read inside it, whatever the server enforces.
+
 ## 0.8.0
 
 - `ollama_url` ending in `/v1` selects an OpenAI-style client (llama-server, llama-swap): availability from `/v1/models`, both job kinds through `/v1/chat/completions`, extraction with `response_format: json_object`, thinking off through `chat_template_kwargs`. Any other URL keeps the Ollama client unchanged.

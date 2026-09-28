@@ -53,11 +53,13 @@ passes the same secret screen as a record.
 
 | `ollama_url` | Client | Availability | Chat | Thinking off | Extraction JSON |
 |---|---|---|---|---|---|
-| ends in `/v1` | OpenAI-style (llama-server, llama-swap) | `GET /v1/models` | `POST /v1/chat/completions` | `chat_template_kwargs.enable_thinking: false` | `response_format: json_object` |
+| ends in `/v1` | OpenAI-style (llama-server, llama-swap) | `GET /v1/models` | `POST /v1/chat/completions` | `chat_template_kwargs.enable_thinking: false` | `response_format` `json_schema` requiring a `memories` array |
 | anything else | Ollama | `GET /api/tags` | `POST /api/chat` | `think: false` | `format: json` |
 
 Both use temperature 0.1. The OpenAI-style client caps output at 2048 tokens for extraction and 512
 for an answer. Model names are what the server serves: for llama-swap, its model IDs and aliases.
+Extraction asks for a schema because the PrismML llama.cpp fork does not enforce `json_object`; a
+reply inside one Markdown code fence is read inside it.
 
 ## Model routing
 
