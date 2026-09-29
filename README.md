@@ -1,14 +1,8 @@
 # ha-agent-memory
 
-Home Assistant add-on: one shared, bounded memory for Claude Code, Codex and other agents,
-so a session starts from what earlier sessions learned instead of re-reading the repository.
-Canonical storage and retrieval never depend on a paid model or on a model server: an encoder,
-when configured, improves ranking and search answers from full-text search whenever it does not.
+Home Assistant add-on: one shared, bounded memory for Claude Code, Codex and other agents, so a session starts from what earlier sessions learned instead of re-reading the repository. Canonical storage and retrieval never depend on a paid model or on a model server: an encoder, when configured, improves ranking and search answers from full-text search whenever it does not.
 
-It carries storage, namespaces, FTS5 and embedding retrieval, progressive MCP tools, the Home
-Assistant packaging, and enrichment through a local model server (`enrich.py`: redacted notes in,
-validated candidates out, candidates never active until promoted, a job done only after its records
-are written). The shared-memory design is `docs/shared-memory.md`.
+It carries storage, namespaces, FTS5 and embedding retrieval, progressive MCP tools, the Home Assistant packaging, and enrichment through a local model server (`enrich.py`: redacted notes in, validated candidates out, candidates never active until promoted, a job done only after its records are written). The shared-memory design is `docs/shared-memory.md`.
 
 | Piece | Choice |
 |---|---|
@@ -24,14 +18,7 @@ are written). The shared-memory design is `docs/shared-memory.md`.
 
 ## Tools
 
-`memory_namespace`, `memory_bootstrap`, `memory_search`, `memory_get`, `memory_timeline`,
-`memory_project_context`, `memory_answer`, `memory_question_add`, `memory_questions`,
-`memory_store`, `memory_update`, `memory_corroborate`, `memory_forget`, `memory_session_close`,
-`memory_export`, `memory_anchors`, `memory_anchor_report`, `memory_anchor_sweep`. Flow: `bootstrap` → `search` → `get` selected ids, or
-`project_context(namespace, task)` for one bounded packet with a reason per record.
-`bootstrap` lists active records and counts candidates in `candidates_pending`; `memory_timeline`
-lists candidates for review with their revisions, `memory_update(id, revision, {status: active})`
-promotes one, `memory_forget` drops it.
+`memory_namespace`, `memory_bootstrap`, `memory_search`, `memory_get`, `memory_timeline`, `memory_project_context`, `memory_answer`, `memory_question_add`, `memory_questions`, `memory_store`, `memory_update`, `memory_corroborate`, `memory_forget`, `memory_session_close`, `memory_export`, `memory_anchors`, `memory_anchor_report`, `memory_anchor_sweep`. Flow: `bootstrap` → `search` → `get` selected ids, or `project_context(namespace, task)` for one bounded packet with a reason per record. `bootstrap` lists active records and counts candidates in `candidates_pending`; `memory_timeline` lists candidates for review with their revisions, `memory_update(id, revision, {status: active})` promotes one, `memory_forget` drops it.
 
 ## Write protocol
 
@@ -55,17 +42,11 @@ promotes one, `memory_forget` drops it.
 | `host:` | a client, through `memory_anchor_report` | any host on the LAN |
 | `url:` | a client, through `memory_anchor_report` | any host that can reach the URL |
 
-Each anchor keeps its last definitive state, `unchecked`, `ok` or `missing`, and `unavailable_since`
-while its checker could not look. A report of `unavailable` keeps the state and files nothing. A
-change between `ok` and `missing` files one observation on the record. A change of state advances the
-record's revision; `memory_anchors` lists each anchor with its record's namespace. A record with a missing anchor
-carries `missing_anchors` in search, get, timeline, bootstrap and project context.
+Each anchor keeps its last definitive state, `unchecked`, `ok` or `missing`, and `unavailable_since` while its checker could not look. A report of `unavailable` keeps the state and files nothing. A change between `ok` and `missing` files one observation on the record. A change of state advances the record's revision; `memory_anchors` lists each anchor with its record's namespace. A record with a missing anchor carries `missing_anchors` in search, get, timeline, bootstrap and project context.
 
 ## Embedding retrieval
 
-`embed_url` names an OpenAI-style `/v1` server with an embedding model. On the frozen eval
-(`tools/retrieval-eval/`, 72 queries over 24 records) cosine alone scored MRR 0.94 against FTS5's
-0.83; paraphrases went from 0.60 to 0.86.
+`embed_url` names an OpenAI-style `/v1` server with an embedding model. On the frozen eval (`tools/retrieval-eval/`, 72 queries over 24 records) cosine alone scored MRR 0.94 against FTS5's 0.83; paraphrases went from 0.60 to 0.86.
 
 | | |
 |---|---|
@@ -82,8 +63,7 @@ carries `missing_anchors` in search, get, timeline, bootstrap and project contex
 | Not sent | a query that screens as carrying a secret |
 | Not affected | the demand signal counts FTS hits; standing answers take FTS sources |
 
-A miss on a query's vector marks the encoder down until the next probe, so a dead encoder costs one
-search `embed_timeout_s` and later searches nothing.
+A miss on a query's vector marks the encoder down until the next probe, so a dead encoder costs one search `embed_timeout_s` and later searches nothing.
 
 ```yaml
 embed_url: http://192.0.2.20:8080/v1
@@ -91,14 +71,11 @@ embed_model: qwen3-emb-0.6b
 embed_timeout_s: 2
 ```
 
-Measure a retrieval change offline before shipping it: `python tools/retrieval-eval/eval.py . --embeddings tools/retrieval-eval/embeddings.json`
-ranks the frozen queries through `agent_memory/embed.py` with the vectors `embed_eval.py` fetched.
+Measure a retrieval change offline before shipping it: `python tools/retrieval-eval/eval.py . --embeddings tools/retrieval-eval/embeddings.json` ranks the frozen queries through `agent_memory/embed.py` with the vectors `embed_eval.py` fetched.
 
 ## Standing questions
 
-`bootstrap` returns an index and `project_context` retrieves afresh every call. Neither is a
-maintained answer, so a session needing settled knowledge rediscovers it. A standing question is
-answered once in the background and read for nothing afterwards.
+`bootstrap` returns an index and `project_context` retrieves afresh every call. Neither is a maintained answer, so a session needing settled knowledge rediscovers it. A standing question is answered once in the background and read for nothing afterwards.
 
 | | |
 |---|---|
@@ -110,8 +87,7 @@ answered once in the background and read for nothing afterwards.
 | Grounding | the answer cites `source_ids`; nothing in scope gives `No record in scope answers this.` |
 | Brevity | at most four sentences, and cut to `ANSWER_CHARS` on the way into the store |
 
-A stale answer stays readable and is labelled stale, never silently served as current. Model output
-passes the same secret screen as a record.
+A stale answer stays readable and is labelled stale, never silently served as current. Model output passes the same secret screen as a record.
 
 ## Model server
 
@@ -120,16 +96,11 @@ passes the same secret screen as a record.
 | ends in `/v1` | OpenAI-style (llama-server, llama-swap) | `GET /v1/models` | `POST /v1/chat/completions` | `chat_template_kwargs.enable_thinking: false` | `response_format` `json_schema` requiring a `memories` array |
 | anything else | Ollama | `GET /api/tags` | `POST /api/chat` | `think: false` | `format: json` |
 
-Both use temperature 0.1. The OpenAI-style client caps output at 2048 tokens for extraction and 512
-for an answer. Model names are what the server serves: for llama-swap, its model IDs and aliases.
-Extraction asks for a schema because the PrismML llama.cpp fork does not enforce `json_object`; a
-reply inside one Markdown code fence is read inside it.
+Both use temperature 0.1. The OpenAI-style client caps output at 2048 tokens for extraction and 512 for an answer. Model names are what the server serves: for llama-swap, its model IDs and aliases. Extraction asks for a schema because the PrismML llama.cpp fork does not enforce `json_object`; a reply inside one Markdown code fence is read inside it.
 
 ## Model routing
 
-`ollama_models` names a chain per job kind, most preferred first. Extraction pulls typed fields out
-of messy notes; answering writes four sentences of prose. Without the option the worker uses
-`ollama_model` for both.
+`ollama_models` names a chain per job kind, most preferred first. Extraction pulls typed fields out of messy notes; answering writes four sentences of prose. Without the option the worker uses `ollama_model` for both.
 
 ```yaml
 ollama_models:
@@ -139,22 +110,15 @@ ollama_models:
   - "answer:granite4.1:8b"
 ```
 
-The chain above is the measured one (7 real notes, 18 frozen questions, 3 runs). Both
-requests set `think: false`: a thinking model fills Ollama's 4096-token default context before it
-writes the reply.
+The chain above is the measured one (7 real notes, 18 frozen questions, 3 runs). Both requests set `think: false`: a thinking model fills Ollama's 4096-token default context before it writes the reply.
 
-The chain is also the failure path: a model missing from the host, or one whose reply will not
-parse, costs the next model rather than the job. The configured default always ends the chain, and
-a job every model failed still fails. Records and audit name the model that actually served.
+The chain is also the failure path: a model missing from the host, or one whose reply will not parse, costs the next model rather than the job. The configured default always ends the chain, and a job every model failed still fails. Records and audit name the model that actually served.
 
-The option is a flat list, not a nested map: the Supervisor treats a nested dict in the schema as
-required and refuses to update an add-on whose stored options predate the key.
+The option is a flat list, not a nested map: the Supervisor treats a nested dict in the schema as required and refuses to update an add-on whose stored options predate the key.
 
 ## Evidence
 
-`confidence` is what the writer asserted. `memory_corroborate(id, quote, stance)` attaches one
-dated, attributed, quoted observation, so a second session can agree or disagree without
-superseding the record, which would erase its history and the disagreement.
+`confidence` is what the writer asserted. `memory_corroborate(id, quote, stance)` attaches one dated, attributed, quoted observation, so a second session can agree or disagree without superseding the record, which would erase its history and the disagreement.
 
 | | |
 |---|---|
@@ -165,15 +129,11 @@ superseding the record, which would erase its history and the disagreement.
 | Each contradiction | halves what is left, so one refusal outweighs two agreements |
 | Ranking | search uses `effective_confidence`; `why` reads `N for/M against` or `asserted, unwitnessed` |
 
-A contradicted record stays `active` and readable: disagreement is recorded, not resolved by
-deletion. Quotes pass the same secret screen as a store.
+A contradicted record stays `active` and readable: disagreement is recorded, not resolved by deletion. Quotes pass the same secret screen as a store.
 
 ## Clients
 
-Claude Code, user scope: `claude mcp add --scope user --transport http agent-memory http://192.0.2.10:8765/mcp`.
-Codex (`~/.codex/config.toml`): `[mcp_servers.agent_memory]` with `url = "http://192.0.2.10:8765/mcp"`.
-A client authenticating by token adds `Authorization: Bearer <token>` and its sha256 to the options.
-`tools/retrieval-eval/fetch.py` sends `AGENT_MEMORY_TOKEN_CLAUDE` (`--codex`: `AGENT_MEMORY_TOKEN_CODEX`), read from the process environment, then the Windows user environment.
+Claude Code, user scope: `claude mcp add --scope user --transport http agent-memory http://192.0.2.10:8765/mcp`. Codex (`~/.codex/config.toml`): `[mcp_servers.agent_memory]` with `url = "http://192.0.2.10:8765/mcp"`. A client authenticating by token adds `Authorization: Bearer <token>` and its sha256 to the options. `tools/retrieval-eval/fetch.py` sends `AGENT_MEMORY_TOKEN_CLAUDE` (`--codex`: `AGENT_MEMORY_TOKEN_CODEX`), read from the process environment, then the Windows user environment.
 
 ## Develop
 
