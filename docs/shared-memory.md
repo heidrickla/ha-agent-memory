@@ -2,14 +2,6 @@
 
 Status: revision 2, 2026-09-28, after Codex review rounds 1 to 3 (recorded in ha-management `records/svc-agent-memory.md`). Built in agent-memory 0.11.1 and the ha-management hooks of the same day: per-agent tokens (Claude and Codex), receipts bound to the client and every input with tombstones past the retention, one screen for every database write, one transaction per mutation, the bootstrap budget on the wire, relative `path:` anchors resolved against their repository's checkout. The IP client `desktop` stays configured beside the token clients (owner's decision). The advisory duplicate check is deferred until labelled pairs exist.
 
-Known gaps after the build (2026-09-28):
-- Supersession happens only when a record is created, so a reviewed candidate cannot take over from an older active record.
-- Every closed session adds a candidate summary, so candidates accumulate until the agent reviews them at session start.
-- Whole-response budgeting shows 5 items and leaves 11 out for ha-agent-memory's bootstrap at 500 tokens (2,000 bytes).
-- No per-field length limits beyond namespace and topics: an oversized title is stored, it just never fits bootstrap.
-- Search, get and project-context packing still admit their first item whatever its size.
-- Tokens as user environment variables are readable by every process, both agents' shells included.
-
 Goal (the owner, 2026-09-28): one memory both agents read and write, "reads and writes through an mcp server that queues changes or something". agent-memory already is that server for part of the job; this document covers what it must change and add before each agent's own memory can be switched off.
 
 ## Where memory lives today

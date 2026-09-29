@@ -35,9 +35,31 @@ and the task match in `memory_project_context` also cover every other repository
 embedding retrieval: `memory_search` and the task match rank by cosine over record vectors
 whenever the encoder answers within the timeout and every record in reach has a current vector,
 and by full-text search otherwise. `ranking` in the response says which. `/health` shows
-`embeddings`. Without `embed_url` nothing changes.
+`embeddings`. Without `embed_url` search is full-text only.
 
 `namespace_renames` moves stored namespaces after an owner rename, applied at start:
 `{from: gitea/example/, to: gitea/heidrickla/}` rewrites every `gitea/example/<repo>` record, job,
 query and standing question to `gitea/heidrickla/<repo>`. A rerun moves nothing. Set
 `forge_owner`, `project_links` and `hubs` to the new owner at the same time.
+
+## Options
+
+| Option | Default | Effect |
+|---|---|---|
+| `clients` | one address client | Who may call: `name`, `ip` or `token_sha256`, and `scopes`. |
+| `github_owner` | `heidrickla` | Remotes under this GitHub owner become `github/<owner>/<repo>`. |
+| `forge_owner`, `forge_hosts` | `heidrickla`, the forge's names | Remotes under this owner on these hosts become `gitea/<owner>/<repo>`. |
+| `project_links` | two projects | Repository namespaces that share a `projects/<name>` scope. |
+| `hubs` | `gitea/heidrickla/ha-management` | Namespaces whose search and task match reach every other repository. |
+| `namespace_renames` | none | Owner prefixes moved at start. |
+| `anchor_sweep_hours` | 6 | Interval of the entity anchor check, 1 to 168. |
+| `context_budget_tokens` | 4000 | Default `project_context` packet, 500 to 8000. |
+| `hard_context_limit_tokens` | 8000 | No packet exceeds it, 1000 to 16000. |
+| `retention_deleted_days` | 30 | Forgotten records and recorded queries are purged after it, and session-close receipts become tombstones; 1 to 365. |
+| `ollama_url` | absent: no enrichment | Ollama, or an OpenAI-style server when the URL ends in `/v1`. |
+| `ollama_model` | `qwen3.5:9b` | Default model for every job kind, last in each chain. |
+| `ollama_models` | absent | `<kind>:<model>` entries, most preferred first, kinds `extract` and `answer`. |
+| `ollama_timeout_s` | 120 | One model call's limit, 10 to 900. |
+| `embed_url` | absent: full-text only | OpenAI-style `/v1` base URL serving embeddings. |
+| `embed_model` | `qwen3-emb-0.6b` | The embedding model's name on that server. |
+| `embed_timeout_s` | 2 | Wait for a query's vector before answering from full-text search, 0.2 to 30. |

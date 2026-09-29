@@ -5,10 +5,10 @@ so a session starts from what earlier sessions learned instead of re-reading the
 Canonical storage and retrieval never depend on a paid model or on a model server: an encoder,
 when configured, improves ranking and search answers from full-text search whenever it does not.
 
-From the plan `Shared Agent Memory on Home Assistant` (2026-09-19): phases 1 to 4 are built here:
-storage, namespaces, FTS5 retrieval, progressive MCP tools, HA packaging, and enrichment through a
-local model server (`enrich.py`: redacted notes in, validated candidates out, candidates never
-active until promoted, a job done only after its records are written).
+It carries storage, namespaces, FTS5 and embedding retrieval, progressive MCP tools, the Home
+Assistant packaging, and enrichment through a local model server (`enrich.py`: redacted notes in,
+validated candidates out, candidates never active until promoted, a job done only after its records
+are written). The shared-memory design is `docs/shared-memory.md`.
 
 | Piece | Choice |
 |---|---|
@@ -20,7 +20,7 @@ active until promoted, a job done only after its records are written).
 | Budgets | bootstrap 500 tokens over the whole response (2,000 bytes), search 750, records 2000, packet 4000 (hard limit 8000); every response reports its estimate and truncation |
 | Auth | per-client bearer token (sha256 in options) or source address; scopes read, write, delete, export, admin, checked by one rule for MCP tools and REST routes; a token client is recorded as the writer |
 | Filtering | every persisted field and queued payload: credentials, key material, JWTs, URL passwords and the `do-not-store` marker are refused and audited by field and pattern name; every database write passes the same screen, and audit context carrying a secret is kept as `[screened:<pattern>]` |
-| Page | ingress only, dark: health, namespaces, audit tail |
+| Page | ingress only, dark: health, namespaces, queue, audit tail |
 
 ## Tools
 
@@ -70,7 +70,7 @@ carries `missing_anchors` in search, get, timeline, bootstrap and project contex
 | | |
 |---|---|
 | Used when | the encoder answered its last probe, the query's vector arrives within `embed_timeout_s`, and every record the search could return has a current vector |
-| Otherwise | FTS5, unchanged; `ranking` in the response says which answered |
+| Otherwise | FTS5; `ranking` in the response says which answered |
 | Records ranked | every live record in the scopes and hub reach, the same set full-text search reads; cosine alone, ties to the lower id |
 | Query text | `Instruct: Given a web search query, retrieve relevant passages that answer the query\nQuery:` then the query |
 | Record text | `title\ncontent`, no instruction |
@@ -129,7 +129,7 @@ reply inside one Markdown code fence is read inside it.
 
 `ollama_models` names a chain per job kind, most preferred first. Extraction pulls typed fields out
 of messy notes; answering writes four sentences of prose. Without the option the worker uses
-`ollama_model` for both, exactly as before.
+`ollama_model` for both.
 
 ```yaml
 ollama_models:
@@ -139,7 +139,7 @@ ollama_models:
   - "answer:granite4.1:8b"
 ```
 
-The chain above was measured on 2026-09-28 (7 real notes, 18 frozen questions, 3 runs). Both
+The chain above is the measured one (7 real notes, 18 frozen questions, 3 runs). Both
 requests set `think: false`: a thinking model fills Ollama's 4096-token default context before it
 writes the reply.
 
@@ -152,16 +152,15 @@ required and refuses to update an add-on whose stored options predate the key.
 
 ## Evidence
 
-`confidence` was a number the writer asserted. A second session seeing the same thing had nowhere
-to say so, and one finding a record wrong could only supersede it, which erases the history and
-leaves no trace of the disagreement. `memory_corroborate(id, quote, stance)` attaches one dated,
-attributed, quoted observation instead.
+`confidence` is what the writer asserted. `memory_corroborate(id, quote, stance)` attaches one
+dated, attributed, quoted observation, so a second session can agree or disagree without
+superseding the record, which would erase its history and the disagreement.
 
 | | |
 |---|---|
 | Stances | `corroborates`, `contradicts` |
 | Derived | `proof_count`, `refutation_count`, `effective_confidence` |
-| Unwitnessed record | keeps the confidence it was given; nothing already stored changes meaning |
+| Unwitnessed record | keeps the confidence it was given |
 | Each corroboration | closes a third of the remaining distance to 1.0 |
 | Each contradiction | halves what is left, so one refusal outweighs two agreements |
 | Ranking | search uses `effective_confidence`; `why` reads `N for/M against` or `asserted, unwitnessed` |
@@ -182,5 +181,7 @@ A client authenticating by token adds `Authorization: Bearer <token>` and its sh
 python -m pytest -q tests
 python -m ruff check . && python -m ruff format --check .
 ```
+
+The forge workflow `.gitea/workflows/validate.yml` runs these plus yamllint and shellcheck.
 
 Deploy: `git archive --format=tar HEAD agent_memory | ssh root@<ha> 'tar -x -C /local_apps && ha store reload'`, then install or rebuild `local_agent_memory`.
