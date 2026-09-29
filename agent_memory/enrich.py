@@ -84,8 +84,8 @@ class Ollama:
             "model": model or self.model,
             "stream": False,
             # No `format` here, and thinking still empties the reply: it runs until prompt plus output
-            # fill the context. Measured 2026-09-28 against qwen3.5:9b on the service's 4096-token
-            # default: `done_reason: length`, prompt plus eval exactly 4096, zero characters of content.
+            # fill the context. Measured against qwen3.5:9b on the service's 4096-token default:
+            # `done_reason: length`, prompt plus eval exactly 4096, zero characters of content.
             "think": False,
             "options": {"temperature": 0.1},
             "messages": [
@@ -104,7 +104,7 @@ class Ollama:
             "stream": False,
             "format": "json",
             # A THINKING MODEL UNDER `format: json` SPENDS ITS WHOLE BUDGET THINKING AND RETURNS AN
-            # EMPTY CONTENT STRING. Measured against qwen3.5:9b on 2026-09-22: two runs in three
+            # EMPTY CONTENT STRING. Measured against qwen3.5:9b: two runs in three
             # came back with `done_reason: "length"`, 2048-3585 eval tokens and zero characters, so
             # `parse_candidates` raised and the job burned an attempt. Raising `num_predict` made it
             # worse, because the budget was never the constraint. With thinking off, three runs in
@@ -128,7 +128,7 @@ EXTRACT_TOKENS = 2048
 ANSWER_TOKENS = 512
 
 # A schema, not `json_object`: the PrismML llama.cpp fork ignores `json_object` (11 of 12 replies to one
-# short note came back inside a ```json fence, 2026-09-28) and compiles a schema to a grammar (0 of 12).
+# short note came back inside a ```json fence) and compiles a schema to a grammar (0 of 12).
 EXTRACT_SCHEMA = {"type": "object", "properties": {"memories": {"type": "array", "items": {"type": "object"}}}, "required": ["memories"]}
 
 
@@ -313,9 +313,7 @@ class Worker:
 
     def run_job(self, job: dict) -> int:
         """One job: returns how many candidates were stored; raises on failure."""
-        # Dispatch on kind. This used to run every job as an extraction whatever its kind said,
-        # which was harmless while `extract` was the only one and would have silently mis-run the
-        # first job of any other kind.
+        # Dispatch on kind: an `answer` job answers a standing question; any other job is an extraction.
         if job.get("kind") == "answer":
             return self.run_answer(job)
         payload = job["payload"]

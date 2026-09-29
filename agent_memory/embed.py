@@ -1,12 +1,12 @@
 """Embedding retrieval: record vectors from an OpenAI-style `/v1/embeddings` server, kept in the store.
 
-Measured offline 2026-09-28 on the frozen eval (`tools/retrieval-eval/`): cosine alone over
+Measured offline on the frozen eval (`tools/retrieval-eval/`): cosine alone over
 Qwen3-Embedding-0.6B vectors scored MRR 0.94 against FTS5's 0.83, paraphrases 0.60 to 0.86.
 
 | When | Search ranks by |
 |---|---|
 | the encoder answers and every record searched has a current vector | cosine alone, over every live record in the scopes and reach |
-| otherwise | FTS5, as before |
+| otherwise | FTS5 |
 
 The query's vector gets `embed_timeout_s`; a miss marks the encoder down until the next probe, so
 retrieval never waits on it for longer than that. The texts are the offline test's
