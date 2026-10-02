@@ -15,10 +15,12 @@ URL ends in `/v1`.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import logging
 import re
 import threading
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -236,6 +238,56 @@ def parse_candidates(text: str) -> list[dict]:
     return out
 
 
+PROBE_S = 15.0
+
+
+class Pool:
+    """Model servers in preference order, routed like a load balancer (the owner, 2026-10-02): a probe no call
+    waits on keeps each server's live state, and each call goes to the live server with the fewest calls
+    in flight, the earlier one on a tie. A call that cannot reach its server marks it down until the next
+    probe and moves to the next live one. A server not yet probed counts as live."""
+
+    def __init__(self, clients: list, probe_s: float = PROBE_S):
+        self.clients = list(clients)
+        self.live: list[bool | None] = [None] * len(self.clients)
+        self.busy = [0] * len(self.clients)
+        self.checked: float | None = None
+        self.probe_s = probe_s
+        self.lock = threading.Lock()
+
+    def probe(self) -> None:
+        results: list[bool | None] = [bool(c.available()) for c in self.clients]
+        with self.lock:
+            self.live, self.checked = results, time.monotonic()
+
+    def probe_if_due(self) -> None:
+        if self.checked is None or time.monotonic() - self.checked >= self.probe_s:
+            self.probe()
+
+    def order(self) -> list[int]:
+        """Indexes of the live servers, fewest calls in flight first, then preference order."""
+        with self.lock:
+            return sorted((i for i, up in enumerate(self.live) if up is not False), key=lambda i: (self.busy[i], i))
+
+    @contextlib.contextmanager
+    def using(self, i: int):
+        with self.lock:
+            self.busy[i] += 1
+        try:
+            yield self.clients[i]
+        finally:
+            with self.lock:
+                self.busy[i] -= 1
+
+    def mark_down(self, i: int) -> None:
+        with self.lock:
+            self.live[i] = False
+
+    def state(self) -> list[dict]:
+        with self.lock:
+            return [{"url": getattr(c, "base", ""), "live": up, "in_flight": b} for c, up, b in zip(self.clients, self.live, self.busy, strict=True)]
+
+
 def parse_model_chains(value) -> dict[str, list[str]]:
     """Per-kind model chains from either shape.
 
@@ -277,14 +329,29 @@ class Worker:
     def __init__(self, store: Store, options: dict, ollama: Ollama | OpenAIChat | None = None, poll_s: float = 30.0):
         self.store = store
         self.options = options
-        url = (options.get("ollama_url") or "").strip()
         self.default_model = options.get("ollama_model") or "qwen3.5:9b"
         self.model_chains = parse_model_chains(options.get("ollama_models"))
-        self.ollama = ollama if ollama is not None else (client_for(url, self.default_model, int(options.get("ollama_timeout_s") or 120)) if url else None)
+        # `ollama_url` first, `ollama_fallback_url` second: each call goes to a live one (`Pool`).
+        urls = dict.fromkeys(u for u in ((options.get("ollama_url") or "").strip(), (options.get("ollama_fallback_url") or "").strip()) if u)
+        timeout = int(options.get("ollama_timeout_s") or 120)
+        clients = [ollama] if ollama is not None else [client_for(u, self.default_model, timeout) for u in urls]
+        self.pool = Pool(clients, probe_s=min(PROBE_S, poll_s))
         self.poll_s = poll_s
         self.last_available: bool | None = None
         self.processed = 0
         self.failed = 0
+
+    @property
+    def ollama(self) -> Ollama | OpenAIChat | None:
+        """The server a call would go to now, or the first when none is live; None when none is configured."""
+        if not self.pool.clients:
+            return None
+        order = self.pool.order()
+        return self.pool.clients[order[0] if order else 0]
+
+    @ollama.setter
+    def ollama(self, client) -> None:
+        self.pool = Pool([client] if client is not None else [], probe_s=self.pool.probe_s)
 
     def label(self, model: str) -> str:
         """What records, answers and audit name as the author: `<api>:<model>`."""
@@ -298,31 +365,45 @@ class Worker:
             chain.append(fallback)
         return chain
 
-    def _try_models(self, kind: str, call) -> tuple[str, str]:
-        """Run `call(model)` down the chain; returns (model, reply). Raises the LAST error.
+    def _try_models(self, kind: str, call) -> tuple[str, str, str]:
+        """Run `call(client, model)` on the live servers in `Pool` order and down each one's model chain;
+        returns (model, reply, server URL). Raises the LAST error.
 
         A model missing from the host is the ordinary case here -- the chain names what would be
-        good, not what is pulled -- so it must cost one attempt rather than the job.
+        good, not what is pulled -- so it costs the next model. A server that does not answer costs
+        the next server, and is marked down until its next probe.
         """
         last: Exception | None = None
-        for model in self.models_for(kind):
-            try:
-                reply = call(model)
-                if reply and reply.strip():
-                    return model, reply
-                last = ValueError(f"empty reply from {model}")
-            except (ValueError, urllib.error.URLError, OSError, TimeoutError) as err:
-                last = err
-                LOG.warning("model %s failed on a %s job: %s", model, kind, err)
-        raise last or ValueError("no model produced a reply")
+        for i in self.pool.order():
+            with self.pool.using(i) as client:
+                base = getattr(client, "base", "")
+                for model in self.models_for(kind):
+                    try:
+                        reply = call(client, model)
+                        if reply and reply.strip():
+                            return model, reply, base
+                        last = ValueError(f"empty reply from {model}")
+                    except urllib.error.HTTPError as err:  # the server answered; this model failed
+                        last = err
+                        LOG.warning("model %s failed on a %s job at %s: %s", model, kind, base, err)
+                    except (urllib.error.URLError, OSError, TimeoutError) as err:
+                        last = err
+                        self.pool.mark_down(i)
+                        LOG.warning("server %s did not answer a %s job (%s); down until its next probe", base, kind, err)
+                        break
+                    except ValueError as err:
+                        last = err
+                        LOG.warning("model %s failed on a %s job at %s: %s", model, kind, base, err)
+        raise last or ValueError("no live model server")
 
     def state(self) -> dict:
         depth = self.store.queue_depth()
         return {
-            "configured": self.ollama is not None,
+            "configured": bool(self.pool.clients),
             "api": getattr(self.ollama, "api", "ollama") if self.ollama else None,
             "model": self.ollama.model if self.ollama else None,
-            "ollama": ("available" if self.last_available else "offline") if self.ollama else "off",
+            "ollama": ("available" if self.last_available else "offline") if self.pool.clients else "off",
+            "servers": self.pool.state(),
             "prompt": PROMPT_VERSION,
             "queued": depth["queued"],
             "oldest": depth["oldest"],
@@ -345,12 +426,12 @@ class Worker:
 
         # A reply that will not parse is this job's characteristic failure, and it is a property of
         # the model, so it costs the next model in the chain rather than the job.
-        def extract_with(model: str) -> str:
-            reply = self.ollama.extract(job["namespace"], notes, model)
+        def extract_with(client, model: str) -> str:
+            reply = client.extract(job["namespace"], notes, model)
             parse_candidates(reply)  # raises ValueError on a malformed reply, before the model is accepted
             return reply
 
-        model, reply = self._try_models("extract", extract_with)
+        model, reply, server = self._try_models("extract", extract_with)
         candidates = parse_candidates(reply)
         stored = 0
         # The accepted candidates and the job's completion commit together: an interruption leaves the
@@ -367,7 +448,7 @@ class Worker:
                     LOG.warning("extract job %s: candidate refused: %s", job["id"][:8], err)
             self.store.job_done(job["id"], model)
             self.store.audit("enrichment", "extract", job["namespace"], payload.get("summary_id", ""), f"{stored} candidates, model {model}")
-        LOG.info("extract job %s for %s: %d candidates, model %s", job["id"][:8], job["namespace"], stored, model)
+        LOG.info("extract job %s for %s: %d candidates, model %s at %s", job["id"][:8], job["namespace"], stored, model, server)
         return stored
 
     def enqueue_stale(self) -> dict | None:
@@ -398,7 +479,7 @@ class Worker:
                 self.store.job_done(job["id"], self.ollama.model)
             return 0
         rendered = "\n\n".join(f"[{r['id'][:8]}] {r['title']}\n{r['content'][:600]}" for r in sources)[:ANSWER_LIMIT]
-        model, reply = self._try_models("answer", lambda m: (self.ollama.answer(q["question"], redact(rendered), m) or "").strip())
+        model, reply, server = self._try_models("answer", lambda c, m: (c.answer(q["question"], redact(rendered), m) or "").strip())
         reply = reply.strip()
         # Model output is untrusted text like any other: it goes through the same secret screen.
         if screen(reply):
@@ -409,14 +490,15 @@ class Worker:
             self.store.set_answer(q["id"], reply[:ANSWER_CHARS], self.label(model), [r["id"] for r in sources], basis)
             self.store.job_done(job["id"], model)
             self.store.audit("enrichment", "answer", q["namespace"], q["id"], f"{len(sources)} sources, model {model}")
-        LOG.info("answer job %s for %s: %d sources, model %s", job["id"][:8], q["namespace"], len(sources), model)
+        LOG.info("answer job %s for %s: %d sources, model %s at %s", job["id"][:8], q["namespace"], len(sources), model, server)
         return 1
 
     def step(self) -> bool:
         """One poll: False when there was nothing to do or Ollama is away."""
-        if self.ollama is None:
+        if not self.pool.clients:
             return False
-        self.last_available = self.ollama.available()  # every poll, so health is current with an empty queue too
+        self.pool.probe_if_due()  # every poll, so health is current with an empty queue too
+        self.last_available = bool(self.pool.order())
         job = self.store.next_job()
         if job is None and self.last_available:
             # Nothing queued: refresh one stale standing answer. Keeping this to one per idle poll
@@ -445,7 +527,7 @@ class Worker:
             except Exception:
                 LOG.exception("worker step failed")
                 did = False
-            away = self.ollama is not None and self.last_available is False
+            away = bool(self.pool.clients) and self.last_available is False
             backoff = min(backoff * 2, 600) if away else self.poll_s
             if stop.wait(1.0 if did else backoff):
                 break

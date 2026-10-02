@@ -114,6 +114,18 @@ A stale answer stays readable and is labelled stale, never silently served as cu
 | ends in `/v1` | OpenAI-style (llama-server, llama-swap) | `GET /v1/models` | `POST /v1/chat/completions` | `chat_template_kwargs.enable_thinking: false` | `response_format` `json_schema` requiring a `memories` array |
 | anything else | Ollama | `GET /api/tags` | `POST /api/chat` | `think: false` | `format: json` |
 
+`ollama_fallback_url` names a second server with the same models. The two are routed like a load balancer:
+
+| | |
+|---|---|
+| Live | a server that answered its last availability probe; a probe runs at least every 15 s from the worker's poll, never inside a call; a server not yet probed counts as live |
+| Chosen | the live server with the fewest calls in flight, `ollama_url` first on a tie; the nightly review runs one worker per live server, so its candidates split between them |
+| A server that does not answer a call | marked down until its next probe; the call moves to the next live server |
+| An HTTP error from a server that answered | that model's failure: the next model in the chain on the same server, then the next server |
+| A model that is not running | the call goes to the server anyway; llama-swap loads a configured model on its first request |
+
+`/health` `enrichment.servers` lists each server with `live` and `in_flight`; each extract and answer log line ends with the server that served it, and each review forget's audit row names it.
+
 Both use temperature 0.1. The OpenAI-style client caps output at 2048 tokens for extraction and 512 for an answer. Model names are what the server serves: for llama-swap, its model IDs and aliases. Extraction asks for a schema because the PrismML llama.cpp fork does not enforce `json_object`; a reply inside one Markdown code fence is read inside it.
 
 ## Model routing

@@ -35,6 +35,9 @@ configuration:
   ollama_url:
     name: Model server URL
     description: Optional. Ollama (http://host:11434) or an OpenAI-style server when the URL ends in /v1 (http://host:8080/v1). With it set, session_close with notes queues extraction and the worker stores candidates.
+  ollama_fallback_url:
+    name: Fallback model server URL
+    description: A second server with the same models. Each call goes to whichever of the two answered its last health probe and has the fewest calls in flight, ollama_url first on a tie.
   ollama_model:
     name: Model
     description: Default model for every job kind, and the last model tried in each chain.

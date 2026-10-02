@@ -23,6 +23,10 @@ NS = "gitea/example/ha-management"
 GOOD_JSON = '{"memories": [{"type": "constraint", "title": "A fact", "content": "Something true.", "confidence": 0.8}]}'
 
 
+# What Ollama and llama-swap answer for a model they do not serve: the server answered, the model failed.
+MISSING = urllib.error.HTTPError("http://fleet/api/chat", 404, "model not found", None, None)  # type: ignore[arg-type]
+
+
 class Fleet:
     """An Ollama whose models each behave differently, recording which was asked."""
 
@@ -106,7 +110,7 @@ def test_the_answer_request_turns_thinking_off(monkeypatch):
 def test_the_log_names_the_model_that_served_each_kind(store, caplog):
     """Records and audit named the model, the add-on log did not, so which model served a job could
     not be read where an operator looks first."""
-    fleet = Fleet({"missing": urllib.error.URLError("model not found"), "prose": "Prod-5 carries the HA VM.", "default-model": GOOD_JSON})
+    fleet = Fleet({"missing": MISSING, "prose": "Prod-5 carries the HA VM.", "default-model": GOOD_JSON})
     w = Worker(store, options(ollama_models={"extract": ["missing"], "answer": ["prose"]}), ollama=fleet)
     store.enqueue("extract", NS, {"notes": "some notes", "session": "s1"})
     with caplog.at_level("INFO", logger="agent-memory.enrich"):
@@ -166,7 +170,7 @@ def test_the_default_is_not_repeated_when_it_is_named(store):
 def test_a_missing_model_costs_the_next_one_not_the_job(store):
     """A chain names what would be good, not what is pulled on the host, so a model that is not
     there is the ordinary case."""
-    fleet = Fleet({"needle": urllib.error.URLError("model not found"), "default-model": GOOD_JSON})
+    fleet = Fleet({"needle": MISSING, "default-model": GOOD_JSON})
     w = Worker(store, options(ollama_models={"extract": ["needle"]}), ollama=fleet)
     store.enqueue("extract", NS, {"notes": "some notes", "session": "s1"})
     assert w.step() is True

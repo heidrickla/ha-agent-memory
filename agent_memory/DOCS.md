@@ -36,6 +36,7 @@ A namespace in `hubs` is one whose sessions work on other repositories. Its `mem
 | `hard_context_limit_tokens` | 8000 | No packet exceeds it, 1000 to 16000. |
 | `retention_deleted_days` | 30 | Forgotten records and recorded queries are purged after it, and session-close receipts become tombstones; 1 to 365. |
 | `ollama_url` | absent: no enrichment | Ollama, or an OpenAI-style server when the URL ends in `/v1`. |
+| `ollama_fallback_url` | absent: one server | A second server with the same models. Each call goes to a server that answered its last health probe, the one with fewer calls in flight, `ollama_url` on a tie. |
 | `ollama_model` | `qwen3.5:9b` | Default model for every job kind, last in each chain. |
 | `ollama_models` | absent | `<kind>:<model>` entries, most preferred first, kinds `extract` and `answer`. |
 | `ollama_timeout_s` | 120 | One model call's limit, 10 to 900. |

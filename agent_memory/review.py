@@ -14,10 +14,12 @@ candidates agents had already reviewed: `tools/review-eval/`.
 | the forget applies only while the record is a candidate at the revision the model read | an edit or a promotion during the call keeps it |
 | a reply that will not parse costs the next model in the chain; a failed candidate is kept | the next run tries it again |
 | one run at a time | a run requested during another waits for it |
+| one worker per live model server | the candidates are split between desktop and rack when both answer (`enrich.Pool`) |
 """
 
 from __future__ import annotations
 
+import concurrent.futures
 import contextlib
 import datetime as dt
 import json
@@ -138,12 +140,12 @@ class Reviewer:
         user = render(cand, nbrs)
         found: dict = {}
 
-        def judge(model: str) -> str:
-            reply = self.worker.ollama.judge(INSTRUCTIONS, user, SCHEMA, REVIEW_TOKENS, model)
+        def judge(client, model: str) -> str:
+            reply = client.judge(INSTRUCTIONS, user, SCHEMA, REVIEW_TOKENS, model)
             found["parsed"] = parse(reply, nbrs)  # raises ValueError before the model is accepted
             return reply
 
-        model, _ = self.worker._try_models("review", judge)
+        model, _, server = self.worker._try_models("review", judge)
         verdict, record, reason = found["parsed"]
         if verdict == "session-state" and cand["type"] in LASTING:
             verdict, reason = "keep", f"type {cand['type']} lasts; {reason}"
@@ -154,30 +156,53 @@ class Reviewer:
                 verdict, record, reason = "keep", "", f"named a session summary; {reason}"
             elif missing:
                 verdict, record, reason = "keep", "", f"record lacks {', '.join(missing[:5])}; {reason}"
-        return {"id": cand["id"], "verdict": verdict, "record": record, "reason": reason, "model": model, "shown": [n["id"] for n in nbrs]}
+        return {"id": cand["id"], "verdict": verdict, "record": record, "reason": reason, "model": model, "server": server, "shown": [n["id"] for n in nbrs]}
 
     def run(self, limit: int = 500) -> dict:
         """Review every pending candidate, oldest first; returns the run's summary."""
         with self.lock:
             t0 = time.monotonic()
-            out = {"at": dt.datetime.now(dt.UTC).isoformat(timespec="seconds"), "version": REVIEW_VERSION, "reviewed": 0, "forgotten": dict.fromkeys(FORGETS, 0), "kept": 0, "failed": 0, "error": None}
-            if self.worker.ollama is None or not self.worker.ollama.available():
+            out = {
+                "at": dt.datetime.now(dt.UTC).isoformat(timespec="seconds"),
+                "version": REVIEW_VERSION,
+                "reviewed": 0,
+                "forgotten": dict.fromkeys(FORGETS, 0),
+                "kept": 0,
+                "failed": 0,
+                "servers": {},
+                "error": None,
+            }
+            pool = self.worker.pool
+            if pool.clients:
+                pool.probe_if_due()
+            live = len(pool.order()) if pool.clients else 0
+            if not live:
                 out["error"] = "model server unavailable"
             else:
-                for cand in self.store.pending_candidates(limit):
+                tally = threading.Lock()
+
+                def one(cand: dict) -> None:
                     try:
                         d = self.decide(cand)
                     except (ValueError, urllib.error.URLError, OSError, TimeoutError) as err:
-                        out["failed"] += 1
+                        with tally:
+                            out["failed"] += 1
                         LOG.warning("review of %s failed: %s", cand["id"][:8], err)
-                        continue
-                    out["reviewed"] += 1
-                    detail = f"{REVIEW_VERSION} {d['verdict']}{' of ' + d['record'][:8] if d['record'] else ''}, model {d['model']}: {d['reason']}"
-                    if d["verdict"] in FORGETS and self.store.forget_candidate(cand["id"], cand["revision"], "review", detail):
-                        out["forgotten"][d["verdict"]] += 1
+                        return
+                    detail = f"{REVIEW_VERSION} {d['verdict']}{' of ' + d['record'][:8] if d['record'] else ''}, model {d['model']} at {d['server']}: {d['reason']}"
+                    forgot = d["verdict"] in FORGETS and self.store.forget_candidate(cand["id"], cand["revision"], "review", detail)
+                    with tally:
+                        out["reviewed"] += 1
+                        out["servers"][d["server"]] = out["servers"].get(d["server"], 0) + 1
+                        if forgot:
+                            out["forgotten"][d["verdict"]] += 1
+                        else:
+                            out["kept"] += 1
+                    if forgot:
                         LOG.info("review forgot %s (%s): %s", cand["id"][:8], cand["namespace"], detail)
-                    else:
-                        out["kept"] += 1
+
+                with concurrent.futures.ThreadPoolExecutor(max_workers=live, thread_name_prefix="review") as ex:
+                    list(ex.map(one, self.store.pending_candidates(limit)))
             out["seconds"] = round(time.monotonic() - t0, 1)
             self.store.audit("review", "review-run", detail=json.dumps(out))
             self.last = out

@@ -35,6 +35,7 @@ class FakeJudge:
 
     api = "openai"
     model = "bonsai2-memory"
+    base = "http://fake/v1"
 
     def __init__(self, script, up: bool = True):
         self.script = script
@@ -47,7 +48,10 @@ class FakeJudge:
     def judge(self, system, user, schema, max_tokens, model=""):
         self.calls.append(user)
         title = user.splitlines()[1]
-        return self.script(title, user)
+        out = self.script(title, user)
+        if isinstance(out, Exception):
+            raise out
+        return out
 
 
 def verdict(v: str, record: str = "", reason: str = "because") -> str:
@@ -96,7 +100,7 @@ def test_a_duplicate_of_an_active_record_is_forgotten_with_its_reason(tmp_path):
     out = app.reviewer.run()
     assert status(app, c) == "deleted" and out["forgotten"] == {"duplicate": 1, "session-state": 0} and out["kept"] == 0
     row = app.store.db.execute("select client, action, detail from audit where record_id=? and action='forget'", (c,)).fetchone()
-    assert row["client"] == "review" and row["detail"].startswith(f"review-v1 duplicate of {held[:8]}, model bonsai2-memory: same fact")
+    assert row["client"] == "review" and row["detail"].startswith(f"review-v1 duplicate of {held[:8]}, model bonsai2-memory at http://fake/v1: same fact")
     assert c not in {r["record_id"] for r in app.store.db.execute("select record_id from embeddings")}
 
 

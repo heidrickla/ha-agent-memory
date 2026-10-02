@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.14.0
+
+- `ollama_fallback_url`: a second model server. A probe off the call path keeps each server's live state; each call goes to the live server with the fewest calls in flight, `ollama_url` first on a tie. A server that does not answer a call is marked down until its next probe and the call moves on; an HTTP error is the model's failure and costs the next model on the same server. The nightly review runs one worker per live server. `/health` lists the servers; logs and review audit rows name the server that answered.
+- Test fakes raise HTTP 404 for a missing model, as Ollama and llama-swap do.
+
 ## 0.13.0
 
 - Nightly candidate review at `review_at` (default 03:00 local): the enrichment model forgets a candidate that a record its namespace reaches already states, or that reports only what one session did. Forget only; promotion stays with the agent. Guards: the duplicate must be a record shown, hold every number, version, path, identifier and quoted phrase in the candidate, and not be a session summary standing in for another type; a decision, constraint, requirement, procedure or preference is never session state; the forget applies only to a candidate at the revision read. `POST /api/review` runs it now; `/health` `candidate_review` reports the last run.
