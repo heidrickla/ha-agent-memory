@@ -245,10 +245,14 @@ class Pool:
     """Model servers in preference order, routed like a load balancer (the owner, 2026-10-02): a probe no call
     waits on keeps each server's live state, and each call goes to the live server with the fewest calls
     in flight, the earlier one on a tie. A call that cannot reach its server marks it down until the next
-    probe and moves to the next live one. A server not yet probed counts as live."""
+    probe and moves to the next live one. A server not yet probed counts as live.
 
-    def __init__(self, clients: list, probe_s: float = PROBE_S):
+    `tiers` gives each server a tier: a call uses the lowest tier with a live server, so the Mission
+    Bridge's router (tier 0) is asked while it answers and the hosts direct (tier 1) only while it does not."""
+
+    def __init__(self, clients: list, probe_s: float = PROBE_S, tiers: list[int] | None = None):
         self.clients = list(clients)
+        self.tiers = list(tiers) if tiers is not None else [0] * len(self.clients)
         self.live: list[bool | None] = [None] * len(self.clients)
         self.busy = [0] * len(self.clients)
         self.checked: float | None = None
@@ -265,9 +269,12 @@ class Pool:
             self.probe()
 
     def order(self) -> list[int]:
-        """Indexes of the live servers, fewest calls in flight first, then preference order."""
+        """Indexes of the live servers in the lowest tier that has one, fewest calls in flight first, then
+        preference order."""
         with self.lock:
-            return sorted((i for i, up in enumerate(self.live) if up is not False), key=lambda i: (self.busy[i], i))
+            live = [i for i, up in enumerate(self.live) if up is not False]
+            tier = min((self.tiers[i] for i in live), default=0)
+            return sorted((i for i in live if self.tiers[i] == tier), key=lambda i: (self.busy[i], i))
 
     @contextlib.contextmanager
     def using(self, i: int):
@@ -285,7 +292,7 @@ class Pool:
 
     def state(self) -> list[dict]:
         with self.lock:
-            return [{"url": getattr(c, "base", ""), "live": up, "in_flight": b} for c, up, b in zip(self.clients, self.live, self.busy, strict=True)]
+            return [{"url": getattr(c, "base", ""), "tier": t, "live": up, "in_flight": b} for c, t, up, b in zip(self.clients, self.tiers, self.live, self.busy, strict=True)]
 
 
 def parse_model_chains(value) -> dict[str, list[str]]:
@@ -331,11 +338,17 @@ class Worker:
         self.options = options
         self.default_model = options.get("ollama_model") or "qwen3.5:9b"
         self.model_chains = parse_model_chains(options.get("ollama_models"))
-        # `ollama_url` first, `ollama_fallback_url` second: each call goes to a live one (`Pool`).
-        urls = dict.fromkeys(u for u in ((options.get("ollama_url") or "").strip(), (options.get("ollama_fallback_url") or "").strip()) if u)
+        # Tier 0: `ollama_url` then `ollama_fallback_url`, each call to a live one (`Pool`). Tier 1:
+        # `ollama_direct_urls`, the model hosts themselves, asked only while tier 0 has no live server.
+        first = [u for u in ((options.get("ollama_url") or "").strip(), (options.get("ollama_fallback_url") or "").strip()) if u]
+        direct = [str(u).strip() for u in options.get("ollama_direct_urls") or [] if str(u).strip()]
+        urls = {u: 0 for u in first}
+        for u in direct:
+            urls.setdefault(u, 1)
         timeout = int(options.get("ollama_timeout_s") or 120)
         clients = [ollama] if ollama is not None else [client_for(u, self.default_model, timeout) for u in urls]
-        self.pool = Pool(clients, probe_s=min(PROBE_S, poll_s))
+        tiers = [0] if ollama is not None else list(urls.values())
+        self.pool = Pool(clients, probe_s=min(PROBE_S, poll_s), tiers=tiers)
         self.poll_s = poll_s
         self.last_available: bool | None = None
         self.processed = 0

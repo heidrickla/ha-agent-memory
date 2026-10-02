@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.15.0
+
+- `ollama_direct_urls`: model servers in a lower tier, asked only while `ollama_url` and `ollama_fallback_url` have no live server. With the Voice Bridge's router as `ollama_url`, the hosts are asked direct only while the bridge is down. `/health` `enrichment.servers` names each server's tier.
+- The nightly review runs at least two workers, so a router behind one URL splits them across its hosts.
+
 ## 0.14.0
 
 - `ollama_fallback_url`: a second model server. A probe off the call path keeps each server's live state; each call goes to the live server with the fewest calls in flight, `ollama_url` first on a tie. A server that does not answer a call is marked down until its next probe and the call moves on; an HTTP error is the model's failure and costs the next model on the same server. The nightly review runs one worker per live server. `/health` lists the servers; logs and review audit rows name the server that answered.

@@ -119,7 +119,8 @@ A stale answer stays readable and is labelled stale, never silently served as cu
 | | |
 |---|---|
 | Live | a server that answered its last availability probe; a probe runs at least every 15 s from the worker's poll, never inside a call; a server not yet probed counts as live |
-| Chosen | the live server with the fewest calls in flight, `ollama_url` first on a tie; the nightly review runs one worker per live server, so its candidates split between them |
+| Chosen | the live server with the fewest calls in flight, `ollama_url` first on a tie; the nightly review runs one worker per live server and at least two, so its candidates split between the hosts |
+| Tiers | `ollama_url` and `ollama_fallback_url` first; `ollama_direct_urls` only while neither is live. Here `ollama_url` is the Voice Bridge's router (`http://local-voice-bridge:8789/v1`), which keeps background calls off the host a voice turn is using, and the direct URLs are the two hosts' llama-swap |
 | A server that does not answer a call | marked down until its next probe; the call moves to the next live server |
 | An HTTP error from a server that answered | that model's failure: the next model in the chain on the same server, then the next server |
 | A model that is not running | the call goes to the server anyway; llama-swap loads a configured model on its first request |

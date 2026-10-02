@@ -38,6 +38,9 @@ configuration:
   ollama_fallback_url:
     name: Fallback model server URL
     description: A second server with the same models. Each call goes to whichever of the two answered its last health probe and has the fewest calls in flight, ollama_url first on a tie.
+  ollama_direct_urls:
+    name: Direct model server URLs
+    description: The model hosts themselves, asked only while ollama_url and ollama_fallback_url have no live server (the Voice Bridge's router down). Each call goes to the live one with the fewest calls in flight.
   ollama_model:
     name: Model
     description: Default model for every job kind, and the last model tried in each chain.

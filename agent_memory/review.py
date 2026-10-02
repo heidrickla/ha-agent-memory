@@ -14,7 +14,7 @@ candidates agents had already reviewed: `tools/review-eval/`.
 | the forget applies only while the record is a candidate at the revision the model read | an edit or a promotion during the call keeps it |
 | a reply that will not parse costs the next model in the chain; a failed candidate is kept | the next run tries it again |
 | one run at a time | a run requested during another waits for it |
-| one worker per live model server | the candidates are split between desktop and rack when both answer (`enrich.Pool`) |
+| one worker per live model server, at least two | the candidates are split between desktop and rack: by the Voice Bridge's router, or by `enrich.Pool` when the hosts are asked direct |
 """
 
 from __future__ import annotations
@@ -37,6 +37,7 @@ REVIEW_VERSION = "review-v1"
 NEIGHBOURS = 5
 RECORD_CHARS = 600
 REVIEW_TOKENS = 256
+REVIEW_WORKERS = 2
 VERDICTS = ("duplicate", "session-state", "keep")
 FORGETS = ("duplicate", "session-state")
 LASTING = ("architectural-decision", "constraint", "requirement", "operational-procedure", "preference")
@@ -201,7 +202,8 @@ class Reviewer:
                     if forgot:
                         LOG.info("review forgot %s (%s): %s", cand["id"][:8], cand["namespace"], detail)
 
-                with concurrent.futures.ThreadPoolExecutor(max_workers=live, thread_name_prefix="review") as ex:
+                # At least two: the router behind a single URL spreads them across its hosts itself.
+                with concurrent.futures.ThreadPoolExecutor(max_workers=max(REVIEW_WORKERS, live), thread_name_prefix="review") as ex:
                     list(ex.map(one, self.store.pending_candidates(limit)))
             out["seconds"] = round(time.monotonic() - t0, 1)
             self.store.audit("review", "review-run", detail=json.dumps(out))

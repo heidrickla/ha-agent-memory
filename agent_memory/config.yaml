@@ -1,5 +1,5 @@
 name: Agent Memory
-version: "0.14.0"
+version: "0.15.0"
 slug: agent_memory
 description: Shared, bounded context for Claude Code and Codex over MCP; SQLite and FTS5, no paid model in the path
 url: https://github.com/heidrickla/ha-agent-memory
@@ -86,6 +86,8 @@ schema:
   retention_deleted_days: int(1,365)
   ollama_url: url?
   ollama_fallback_url: url?
+  ollama_direct_urls:
+    - url?
   ollama_model: str?
   ollama_models:
     - str?

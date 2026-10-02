@@ -189,3 +189,53 @@ def test_a_probe_of_a_dead_host_runs_off_the_call_path(tmp_path):
     started.wait(1.0)
     assert pool.order() == [1], "while a slow probe runs, routing reads the last known state"
     t.join()
+
+
+def test_direct_urls_are_a_lower_tier_than_the_router(tmp_path):
+    store = Store(str(tmp_path / "m.db"))
+    w = Worker(store, {"ollama_url": "http://router:8789/v1", "ollama_direct_urls": ["http://desk:8080/v1", "http://rack:8080/v1"]})
+    assert [c.base for c in w.pool.clients] == ["http://router:8789/v1", "http://desk:8080/v1", "http://rack:8080/v1"]
+    assert w.pool.tiers == [0, 1, 1] and [s["tier"] for s in w.state()["servers"]] == [0, 1, 1]
+
+
+def test_the_router_serves_while_it_answers_and_the_hosts_direct_only_when_it_does_not(tmp_path):
+    router, desk, rack = FakeServer("http://router/v1"), FakeServer("http://desk/v1"), FakeServer("http://rack/v1")
+    w, store = worker_with(tmp_path, router, desk, rack)
+    w.pool = Pool([router, desk, rack], tiers=[0, 1, 1])
+    queue_extract(store)
+    assert w.step() is True and router.calls == ["extract:bonsai2-memory"] and desk.calls == rack.calls == []
+    with w.pool.using(0):
+        assert w.pool.order() == [0], "a busy router still takes the call; the hosts direct are only its standby"
+    router.up = False
+    w.pool.checked = None
+    queue_extract(store)
+    assert w.step() is True and desk.calls == ["extract:bonsai2-memory"], "router down: the preferred host direct"
+    router.up = True
+    w.pool.checked = None
+    queue_extract(store)
+    assert w.step() is True and router.calls == ["extract:bonsai2-memory"] * 2 and len(desk.calls) == 1
+
+
+def test_the_review_keeps_two_workers_behind_one_router(tmp_path):
+    app = srv.App({"clients": [], "github_owner": "heidrickla", "forge_owner": "heidrickla", "forge_hosts": [], "project_links": [], "hubs": [NS]}, str(tmp_path))
+    router = FakeServer("http://router/v1", delay=0.2)
+    app.worker.pool = Pool([router])
+    peak = {"now": 0, "max": 0}
+    lock = threading.Lock()
+    serve = router._serve
+
+    def counted(kind, model, reply):
+        with lock:
+            peak["now"] += 1
+            peak["max"] = max(peak["max"], peak["now"])
+        try:
+            return serve(kind, model, reply)
+        finally:
+            with lock:
+                peak["now"] -= 1
+
+    router._serve = counted  # type: ignore[method-assign]
+    for i in range(4):
+        app.store.store_candidate({"namespace": NS, "type": "repository-fact", "title": f"Fact {i}", "content": f"Fact number {i}."}, client="enrichment")
+    out = app.reviewer.run()
+    assert out["reviewed"] == 4 and peak["max"] == 2, "the router spreads two at once across its hosts"
