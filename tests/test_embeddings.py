@@ -1,9 +1,10 @@
-"""Embedding retrieval: cosine when the encoder answers, FTS whenever it does not.
+"""Embedding retrieval: FTS fused with cosine when the encoder answers, FTS whenever it does not.
 
 The encoder here is a fake OpenAI-style server with bag-of-words vectors. What is pinned: the texts
 are the offline test's, a dead or slow encoder never fails or delays a search past the timeout, a
 vector goes stale on an edit or a model change, forget and purge drop it, the backfill covers every
-record search can return, and cosine reaches exactly the records FTS can.
+record search can return, cosine reaches exactly the records FTS can, and the fusion is the offline
+test's configuration c.
 """
 
 from __future__ import annotations
@@ -13,6 +14,7 @@ import hashlib
 import importlib.util
 import json
 import math
+import random
 import re
 import sys
 import threading
@@ -197,18 +199,68 @@ def test_the_worker_backfills_at_start_without_waiting_for_a_poll(tmp_path, enc)
     assert set(vectors(app)) == ids
 
 
-def test_search_ranks_by_cosine_when_the_encoder_answers(tmp_path, enc):
+def test_search_fuses_full_text_and_cosine_when_the_encoder_answers(tmp_path, enc):
     app = srv.App(options(enc[0]), str(tmp_path))
     # Facts, not constraints: project_context lists constraints first whatever the task.
     a = put(app, "Garage door", "the garage door opener pairs over z-wave", type="repository-fact")
     b = put(app, "Encoder card", "the encoder runs on card one of the rack", type="repository-fact")
     app.indexer.step()
     res = app.memory.search(NS, "which card runs the encoder")
-    assert res["ranking"] == "cosine"
-    assert [h["id"] for h in res["hits"]] == [b, a], "every live record in scope, nearest first"
-    assert "cosine" in res["hits"][0]["why"]
+    assert res["ranking"] == "rrf"
+    # Both match "the", so the lists are [a, b] and [b, a] and the scores tie: the higher cosine goes first.
+    assert [h["id"] for h in res["hits"]] == [b, a]
+    assert "full-text #2, cosine #1, cosine " in res["hits"][0]["why"] and "full-text #1, cosine #2, " in res["hits"][1]["why"]
     ctx = app.memory.project_context(NS, "encoder card")
-    assert ctx["ranking"] == "cosine" and any(r["why"] == "nearest to the task by embedding" for r in ctx["records"])
+    assert ctx["ranking"] == "rrf" and any(r["why"] == "matches the task by words and embedding" for r in ctx["records"])
+
+
+def fusion_store(app) -> list[str]:
+    """Forty records over a small vocabulary in two namespaces, so the two lists overlap in part."""
+    rng = random.Random(7)
+    words = ["zebra", "garage", "encoder", "card", "rack", "door", "opener", "wave", "panel", "alarm", "sensor", "light", "kitchen", "porch", "heater", "fan", "pump", "valve", "meter", "grid"]
+    for i in range(40):
+        put(app, f"Fact {i}", " ".join(rng.sample(words, rng.randint(2, 6))), namespace=NS if i % 3 else "global", type="repository-fact")
+    app.indexer.step()
+    return [" ".join(rng.sample(words, rng.randint(1, 3))) for _ in range(30)]
+
+
+def test_production_fusion_is_the_offline_tests_configuration_c(tmp_path, enc):
+    """embed_eval.py's `rank_all` is the oracle: the measured MRR is production's only if the order is."""
+    ee = load_embed_eval()
+    assert (embed.RRF_K, embed.FUSE_DEPTH) == (ee.RRF_K, ee.LIMIT)
+    app = srv.App(options(enc[0]), str(tmp_path))
+    queries = fusion_store(app)
+    docs = {rid: list(embed.unpack(r["vector"])) for rid, r in vectors(app).items()}
+    scopes, statuses = [NS, "global"], ("active", "candidate")
+    differs_from = {"a fts": 0, "b cos": 0}
+    for q in queries:
+        oracle = ee.rank_all(app.store, app.encoder.embed_query(q), q, scopes, (), docs)
+        hits, ranking, _ = embed.retrieve(app.store, app.encoder, q, scopes, 20, statuses)
+        assert ranking == "rrf" and [h["id"] for h in hits] == oracle["c rrf"], q
+        for name in differs_from:
+            differs_from[name] += oracle["c rrf"] != oracle[name]
+    assert all(differs_from.values()), f"control: the fusion differs from each list alone somewhere, {differs_from}"
+
+
+def test_a_short_limit_is_the_head_of_the_full_depth_fusion(tmp_path, enc):
+    """Both lists are cut to 20 before fusion whatever the limit, so `limit` only shortens the answer."""
+    app = srv.App(options(enc[0]), str(tmp_path))
+    scopes, statuses = [NS, "global"], ("active", "candidate")
+    for q in fusion_store(app):
+        full = [h["id"] for h in embed.retrieve(app.store, app.encoder, q, scopes, 20, statuses)[0]]
+        head = [h["id"] for h in embed.retrieve(app.store, app.encoder, q, scopes, 3, statuses)[0]]
+        assert head == full[:3], q
+
+
+def test_the_demand_count_stays_at_the_requested_limit(tmp_path, enc):
+    """FTS runs 20 deep for the fusion; the demand log still counts what a search at `limit` returns."""
+    app = srv.App(options(enc[0]), str(tmp_path))
+    for i in range(6):
+        put(app, f"Zebra {i}", f"zebra fact {i}")
+    app.indexer.step()
+    res = app.memory.search(NS, "zebra", limit=2, client="desk")
+    assert res["ranking"] == "rrf" and len(res["hits"]) == 2
+    assert app.store.db.execute("select hits from queries order by at desc limit 1").fetchone()["hits"] == 2
 
 
 def test_a_dead_encoder_costs_nothing_and_search_answers_from_fts(tmp_path, enc):
@@ -217,7 +269,7 @@ def test_a_dead_encoder_costs_nothing_and_search_answers_from_fts(tmp_path, enc)
     put(app, "Zebra crossing", "zebra stripes mark the crossing")
     put(app, "Other", "nothing to see")
     app.indexer.step()
-    assert app.memory.search(NS, "zebra")["ranking"] == "cosine", "control: cosine while it answers"
+    assert app.memory.search(NS, "zebra")["ranking"] == "rrf", "control: cosine while it answers"
     server.shutdown()
     server.server_close()
     t0 = time.monotonic()
@@ -257,7 +309,7 @@ def test_a_slow_query_embedding_is_cut_off_at_the_timeout(tmp_path, enc):
     assert len(FakeEncoder.seen) == asked, "down until the next probe: no second request"
     FakeEncoder.delay = 0.0
     app.indexer.step()  # the probe brings it back
-    assert app.memory.search(NS, "zebra")["ranking"] == "cosine"
+    assert app.memory.search(NS, "zebra")["ranking"] == "rrf"
 
 
 def test_the_timeout_bounds_the_whole_reply_not_each_read(tmp_path, enc):
@@ -279,7 +331,7 @@ def test_an_edited_record_is_stale_until_it_is_embedded_again(tmp_path, enc):
     put(app, "Other", "unrelated words")
     app.indexer.step()
     before = vectors(app)[rid]
-    assert app.memory.search(NS, "zebra")["ranking"] == "cosine"
+    assert app.memory.search(NS, "zebra")["ranking"] == "rrf"
     app.store.changed.clear()
     app.memory.update(rid, {"content": "zebra two, edited"}, "desk", app.store.get(rid)["revision"])
     assert app.store.changed.is_set(), "an edit wakes the worker"
@@ -288,7 +340,7 @@ def test_an_edited_record_is_stale_until_it_is_embedded_again(tmp_path, enc):
     assert app.indexer.step() == 1
     after = vectors(app)[rid]
     assert after["digest"] != before["digest"] and after["vector"] != before["vector"]
-    assert app.memory.search(NS, "zebra")["ranking"] == "cosine"
+    assert app.memory.search(NS, "zebra")["ranking"] == "rrf"
     app.memory.update(rid, {"confidence": 0.9}, "desk", app.store.get(rid)["revision"])
     assert app.indexer.pending(app.encoder.identity) == [], "a change that leaves the text alone leaves the vector current"
 
@@ -302,7 +354,7 @@ def test_a_new_snapshot_or_model_makes_every_vector_stale(tmp_path, enc):
     assert app.memory.search(NS, "zebra")["ranking"] == "fts", "vectors from the old snapshot are not ranked against the new one"
     assert app.indexer.step() == 3
     assert {r["model"] for r in vectors(app).values()} == {f"{MODEL}@ffff0000ffff"}
-    assert app.memory.search(NS, "zebra")["ranking"] == "cosine"
+    assert app.memory.search(NS, "zebra")["ranking"] == "rrf"
     other = srv.App(options(enc[0], embed_model="other-emb"), str(tmp_path))
     other.encoder.probe()
     assert {p[0] for p in other.indexer.pending(other.encoder.identity)} == ids, "another model: every vector stale"
@@ -348,7 +400,7 @@ def test_cosine_reaches_exactly_the_records_fts_can(tmp_path, enc):
     for scopes, statuses, types, reach in cases:
         fts = app.store.search("zebra", scopes, limit=50, statuses=statuses, types=types, reach=reach)
         hits, ranking, _ = embed.retrieve(app.store, app.encoder, "zebra", scopes, 50, statuses, types, reach)
-        assert ranking == "cosine" and fts
+        assert ranking == "rrf" and fts
         assert {h["id"] for h in hits} == {h["id"] for h in fts}, (scopes, statuses, types, reach)
 
 
@@ -357,7 +409,7 @@ def test_a_hub_search_reaches_other_repositories_by_cosine_too(tmp_path, enc):
     put(app, "Loops", "the loops add-on runs the nightly checks", namespace=OTHER)
     app.indexer.step()
     res = app.memory.search(NS, "when do the nightly checks run")
-    assert res["ranking"] == "cosine" and res["reach"] == [OTHER]
+    assert res["ranking"] == "rrf" and res["reach"] == [OTHER]
     assert [h["namespace"] for h in res["hits"]] == [OTHER] and res["hits"][0]["why"].startswith("reach ")
 
 
@@ -368,7 +420,7 @@ def test_a_query_carrying_a_secret_is_not_sent_to_the_encoder(tmp_path, enc):
     asked = len(FakeEncoder.seen)
     assert app.memory.search(NS, "password=hunter2hunter2")["ranking"] == "fts"
     assert len(FakeEncoder.seen) == asked
-    assert app.memory.search(NS, "zebra")["ranking"] == "cosine" and len(FakeEncoder.seen) == asked + 1, "control"
+    assert app.memory.search(NS, "zebra")["ranking"] == "rrf" and len(FakeEncoder.seen) == asked + 1, "control"
 
 
 def test_the_demand_signal_counts_fts_hits_whichever_ranking_answered(tmp_path, enc):
@@ -377,7 +429,7 @@ def test_the_demand_signal_counts_fts_hits_whichever_ranking_answered(tmp_path, 
         put(app, f"Fact {i}", f"unrelated fact {i}")
     app.indexer.step()
     res = app.memory.search(NS, "zebra stripes", client="desk")
-    assert res["ranking"] == "cosine" and len(res["hits"]) == 3
+    assert res["ranking"] == "rrf" and len(res["hits"]) == 3
     row = app.store.db.execute("select hits, top_rank from queries order by at desc limit 1").fetchone()
     assert row["hits"] == 0 and row["top_rank"] == 0.0, "no record answers it, so it still counts as answered badly"
 

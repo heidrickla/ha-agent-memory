@@ -84,7 +84,7 @@ class Memory:
         self.encoder: embed.Encoder | None = None  # set by the app when embed_url is configured
 
     def _retrieve(self, query: str, scopes: list[str], limit: int, statuses: tuple[str, ...], types: tuple[str, ...], reach: tuple[str, ...]) -> tuple[list[dict], str, list[dict]]:
-        """Cosine when the encoder answers, else FTS (`embed.retrieve`). A query that screens as carrying a
+        """FTS fused with cosine when the encoder answers, else FTS (`embed.retrieve`). A query that screens as carrying a
         secret is not sent to the encoder."""
         encoder = None if screen(query) else self.encoder
         return embed.retrieve(self.store, encoder, query, scopes, limit, statuses, types, reach)
@@ -181,8 +181,8 @@ class Memory:
         statuses = ("active", "candidate") if include_candidates else ("active",)
         hits, ranking, fts = self._retrieve(query, scopes, max(1, min(int(limit), 50)), statuses, tuple(types or ()), tuple(reach))
         # What was asked, and how well it came back; `note_query` screens it. The count is FTS's
-        # whichever ranking answered: cosine returns the nearest records whether or not any of them
-        # answers, so its count would call every question answered.
+        # whichever ranking answered: the fusion's cosine list returns the nearest records whether or not
+        # any of them answers, so its count would call every question answered.
         self.store.note_query(namespace, client, "search", query, len(fts), fts[0]["rank"] if fts else 0.0)
         packed, truncated, used = self._pack(
             [self._snippet(h) for h in hits], BUDGETS["search"], ("id", "namespace", "type", "title", "snippet", "confidence", "status", "revision", "missing_anchors", "why")
@@ -446,7 +446,7 @@ class Memory:
         ranking = None
         if task.strip():
             rows, ranking, _ = self._retrieve(task, scopes, 15, ("active",), (), tuple(reach))
-            add(rows, "matches the task" if ranking == "fts" else "nearest to the task by embedding")
+            add(rows, "matches the task" if ranking == "fts" else "matches the task by words and embedding")
         add(self.store.by_namespace(scopes, ("open-question", "next-step"), limit=6), "open work")
         add(self.store.by_namespace(scopes, ("failure-and-fix", "operational-procedure"), limit=6), "known failure or procedure")
         packed, truncated, used = self._pack(selected, budget, ("id", "namespace", "type", "title", "content", "confidence", "revision", "missing_anchors", "why"))
@@ -485,7 +485,7 @@ TOOLS = [
     ),
     (
         "memory_search",
-        "Ranked titles and snippets with ids for a query in the namespace's scopes; full records come from memory_get. Ranked by embedding similarity when the encoder answers, else full-text; `ranking` says which.",
+        "Ranked titles and snippets with ids for a query in the namespace's scopes; full records come from memory_get. Ranked by full-text fused with embedding similarity when the encoder answers, else full-text alone; `ranking` says which.",
         {
             "namespace": {"type": "string"},
             "query": {"type": "string"},

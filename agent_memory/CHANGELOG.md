@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.12.0
+
+- With the encoder answering, `memory_search` and the task match rank by reciprocal rank fusion of the full-text list and the cosine list (k 60, each list 20 deep or `limit` if deeper; ties to the higher cosine, then the lower id), the offline eval's configuration c. `ranking` is `rrf`. Each hit's `why` names its place in each list.
+
 ## 0.11.1
 
 - A standing question with no supporting records gets its answer and its job's completion in one transaction.

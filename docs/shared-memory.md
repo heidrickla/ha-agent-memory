@@ -45,7 +45,7 @@ Token handling: each token is generated on desktop and stored where only its cli
 ## Read path
 
 1. Session start: the SessionStart hook calls `GET /api/bootstrap` for the working repository's namespace. The budget is enforced on the bytes on the wire (the REST body, or the whole JSON-RPC reply over MCP), and an item that does not fit is never admitted, the first one included (DR-004).
-2. Search on demand: `memory_search`, cosine over record embeddings when the encoder answers, FTS5 otherwise (0.9.0, offline eval MRR 0.94 against 0.83).
+2. Search on demand: `memory_search`, reciprocal rank fusion of FTS5 and cosine over record embeddings when the encoder answers, FTS5 otherwise (0.12.0; offline eval at 150 records, MRR 0.81 against 0.74).
 3. Hub reach: a hub namespace searches every repository namespace, as today.
 4. Staleness: each anchor type names the process that checks it and where it runs. Only entity anchors are swept today; path, host and URL anchors are reported by clients. Unchecked, unavailable and missing are tracked separately, and a record whose anchor is missing is flagged in results (DR-009).
 

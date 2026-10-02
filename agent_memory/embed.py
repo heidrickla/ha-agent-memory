@@ -1,11 +1,12 @@
 """Embedding retrieval: record vectors from an OpenAI-style `/v1/embeddings` server, kept in the store.
 
-Measured offline on the frozen eval (`tools/retrieval-eval/`): cosine alone over
-Qwen3-Embedding-0.6B vectors scored MRR 0.94 against FTS5's 0.83, paraphrases 0.60 to 0.86.
+Measured offline on the frozen eval (`tools/retrieval-eval/`) against the 150-record store: the
+fusion of FTS5 and cosine over Qwen3-Embedding-0.6B vectors scored MRR 0.81 against FTS5's 0.74
+(paired 95% interval +0.014 to +0.122); cosine alone scored 0.82 with an interval crossing zero.
 
 | When | Search ranks by |
 |---|---|
-| the encoder answers and every record searched has a current vector | cosine alone, over every live record in the scopes and reach |
+| the encoder answers and every record searched has a current vector | reciprocal rank fusion of FTS5 and cosine, over every live record in the scopes and reach |
 | otherwise | FTS5 |
 
 The query's vector gets `embed_timeout_s`; a miss marks the encoder down until the next probe, so
@@ -44,6 +45,9 @@ DOC_CHARS = 16000
 EMBEDDED_STATUSES = ("active", "candidate")
 # A text the server will not embed; it is skipped until the model changes. Any other status ends the step.
 REFUSED_CODES = (400, 413, 422)
+# Reciprocal rank fusion's constant and each list's depth: the offline test's `RRF_K` and `LIMIT`.
+RRF_K = 60
+FUSE_DEPTH = 20
 
 
 def query_text(query: str) -> str:
@@ -201,17 +205,29 @@ def scoped_vectors(store, identity: tuple[str, str], scopes: list[str], statuses
     return out
 
 
-def rank(store, qvec: list[float], vectors: dict, scopes: list[str], limit: int) -> list[dict]:
-    """Cosine alone, ties to the lower id: configuration b of the offline test."""
+def fuse(store, fts: list[dict], qvec: list[float], vectors: dict, scopes: list[str], limit: int) -> list[dict]:
+    """Reciprocal rank fusion of the FTS list and the cosine list: configuration c of the offline test.
+
+    Each list is cut to `max(limit, FUSE_DEPTH)`; a record scores the sum of 1/(RRF_K + its position)
+    over the lists holding it; ties go to the higher cosine, then the lower id."""
+    depth = max(limit, FUSE_DEPTH)
     cos = {rid: math.sumprod(qvec, v) for rid, v in vectors.items()}
+    lists = {"full-text": [h["id"] for h in fts[:depth]], "cosine": sorted(cos, key=lambda i: (-cos[i], i))[:depth]}
+    score: dict[str, float] = {}
+    place: dict[str, dict[str, int]] = {}
+    for name, ids in lists.items():
+        for n, rid in enumerate(ids, 1):
+            score[rid] = score.get(rid, 0.0) + 1.0 / (RRF_K + n)
+            place.setdefault(rid, {})[name] = n
     hits = []
-    for rid in sorted(cos, key=lambda i: (-cos[i], i))[:limit]:
+    for rid in sorted(score, key=lambda i: (-score[i], -cos.get(i, -1.0), i))[:limit]:
         d = store.get(rid)
         if d is None:
             continue
         where = f"scope #{scopes.index(d['namespace']) + 1}" if d["namespace"] in scopes else "reach"
-        d["rank"] = round(cos[rid], 4)
-        d["why"] = f"{where} {d['namespace']}, cosine {cos[rid]:.3f}, type {d['type']}, confidence {d['effective_confidence']:.2f}"
+        ranks = ", ".join(f"{name} #{n}" for name, n in place[rid].items())
+        d["rank"] = round(score[rid], 5)
+        d["why"] = f"{where} {d['namespace']}, {ranks}, cosine {cos.get(rid, 0.0):.3f}, type {d['type']}, confidence {d['effective_confidence']:.2f}"
         hits.append(d)
     return hits
 
@@ -219,9 +235,11 @@ def rank(store, qvec: list[float], vectors: dict, scopes: list[str], limit: int)
 def retrieve(
     store, encoder: Encoder | None, query: str, scopes: list[str], limit: int, statuses: tuple[str, ...] = ("active",), types: tuple[str, ...] = (), reach: tuple[str, ...] = ()
 ) -> tuple[list[dict], str, list[dict]]:
-    """(hits, ranking, fts_hits). Ranking is "cosine" or "fts". FTS always runs: it is the fallback and
-    the demand signal's count."""
-    fts = store.search(query, scopes, limit=limit, statuses=statuses, types=types, reach=reach)
+    """(hits, ranking, fts_hits). Ranking is "rrf" or "fts". FTS always runs: it is the fallback, the
+    fusion's keyword list and the demand signal's count. `store.search` sorts every match before it
+    cuts, so the deeper list's first `limit` are what a search at `limit` returns."""
+    deep = store.search(query, scopes, limit=max(limit, FUSE_DEPTH), statuses=statuses, types=types, reach=reach)
+    fts = deep[:limit]
     if encoder is None or not query.strip():
         return fts, "fts", fts
     try:
@@ -229,7 +247,7 @@ def retrieve(
         vectors = scoped_vectors(store, identity, scopes, statuses, types, reach) if identity else None
         qvec = encoder.embed_query(query) if vectors else None  # nothing in reach: nothing to rank
         if qvec is not None:
-            return rank(store, qvec, vectors, scopes, limit), "cosine", fts
+            return fuse(store, deep, qvec, vectors, scopes, limit), "rrf", fts
     except Exception:  # retrieval never depends on the encoder
         LOG.exception("cosine ranking failed; FTS answers")
     return fts, "fts", fts

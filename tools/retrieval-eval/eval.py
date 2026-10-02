@@ -84,7 +84,7 @@ with tempfile.TemporaryDirectory() as tmp:
         state = indexer.state()
         if state["current"] != state["records"]:
             sys.exit(f"backfill left {state['records'] - state['current']} of {state['records']} records without a vector")
-        configs.append("cos")
+        configs.append("prod")
 
     def ranked(q: str, scopes: list, reach: tuple) -> dict:
         # Candidates included: this measures ranking, and 14 of the 24 targets are unpromoted
@@ -92,9 +92,9 @@ with tempfile.TemporaryDirectory() as tmp:
         out = {"fts": store.search(q, scopes, limit=20, statuses=STATUSES, reach=reach)}
         if emb_file:
             hits, ranking, _ = embed.retrieve(store, encoder, q, scopes, 20, STATUSES, (), reach)
-            if ranking != "cosine":
+            if ranking != "rrf":
                 sys.exit(f"production fell back to FTS for {q!r}")
-            out["cos"] = hits
+            out["prod"] = hits
         return out
 
     results: dict[tuple[str, str], list] = {}
@@ -124,7 +124,7 @@ def line(name: str, rows: list, width: int = 6) -> str:
     return f"{name:<{width}}{n:>4}{h1:>8.2f}{h3:>8.2f}{mrr:>8.2f}{miss:>6}{mean_hits:>11.1f}"
 
 
-TITLES = {"fts": "", "cos": ", cosine through agent_memory/embed.py"}
+TITLES = {"fts": "", "prod": ", production ranking (FTS5 fused with cosine) through agent_memory/embed.py"}
 if hub:
     for config in configs:
         print(f"== {label}{TITLES[config]}, asked from {hub}; targets in the hub's scopes (hub) or elsewhere (other)")

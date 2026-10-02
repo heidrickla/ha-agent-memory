@@ -10,7 +10,7 @@ It carries storage, namespaces, FTS5 and embedding retrieval, progressive MCP to
 | Agent interface | MCP over streamable HTTP with JSON responses: `POST http://<ha>:8765/mcp`; the same tools as REST under `/api/` |
 | Namespaces | `github/<owner>/<repo>` and `gitea/<owner>/<repo>` from git remotes (other owners are refused), `projects/<name>`, `topics/<name>`, `global`, `local/<name>` |
 | Retrieval order | repository, its linked projects, given topics, global; a hub's search and task match then reach every other repository namespace |
-| Ranking | cosine over record embeddings when the encoder answers, FTS5 otherwise ([Embedding retrieval](#embedding-retrieval)) |
+| Ranking | reciprocal rank fusion of FTS5 and cosine over record embeddings when the encoder answers, FTS5 otherwise ([Embedding retrieval](#embedding-retrieval)) |
 | Budgets | bootstrap 500 tokens over the whole response (2,000 bytes), search 750, records 2000, packet 4000 (hard limit 8000); every response reports its estimate and truncation |
 | Auth | per-client bearer token (sha256 in options) or source address; scopes read, write, delete, export, admin, checked by one rule for MCP tools and REST routes; a token client is recorded as the writer |
 | Filtering | every persisted field and queued payload: credentials, key material, JWTs, URL passwords and the `do-not-store` marker are refused and audited by field and pattern name; every database write passes the same screen, and audit context carrying a secret is kept as `[screened:<pattern>]` |
@@ -46,13 +46,19 @@ Each anchor keeps its last definitive state, `unchecked`, `ok` or `missing`, and
 
 ## Embedding retrieval
 
-`embed_url` names an OpenAI-style `/v1` server with an embedding model. On the frozen eval (`tools/retrieval-eval/`, 72 queries over 24 records) cosine alone scored MRR 0.94 against FTS5's 0.83; paraphrases went from 0.60 to 0.86.
+`embed_url` names an OpenAI-style `/v1` server with an embedding model. Frozen eval (`tools/retrieval-eval/`), MRR, with the paired 95% interval against FTS5:
+
+| Store | Queries | FTS5 | Cosine alone | Fusion |
+|---|---|---|---|---|
+| 24 records | 72 | 0.83 | 0.94 | |
+| 150 records | 42 (targets still live) | 0.74 | 0.82 (-0.023 to +0.178) | 0.81 (+0.014 to +0.122; better on 11 targets, worse on none) |
 
 | | |
 |---|---|
 | Used when | the encoder answered its last probe, the query's vector arrives within `embed_timeout_s`, and every record the search could return has a current vector |
 | Otherwise | FTS5; `ranking` in the response says which answered |
-| Records ranked | every live record in the scopes and hub reach, the same set full-text search reads; cosine alone, ties to the lower id |
+| Records ranked | every live record in the scopes and hub reach, the same set full-text search reads |
+| Fusion | the FTS5 list and the cosine list, each cut to `max(limit, 20)`; score is the sum of `1/(60 + position)` over the lists holding the record; ties to the higher cosine, then the lower id; `ranking` is `rrf` |
 | Query text | `Instruct: Given a web search query, retrieve relevant passages that answer the query\nQuery:` then the query |
 | Record text | `title\ncontent`, no instruction |
 | Storage | table `embeddings(record_id, digest, model, vector)`, float32; `digest` is sha256 of model, snapshot and text |
