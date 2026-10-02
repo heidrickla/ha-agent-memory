@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.13.0
+
+- Nightly candidate review at `review_at` (default 03:00 local): the enrichment model forgets a candidate that a record its namespace reaches already states, or that reports only what one session did. Forget only; promotion stays with the agent. Guards: the duplicate must be a record shown, hold every number, version, path, identifier and quoted phrase in the candidate, and not be a session summary standing in for another type; a decision, constraint, requirement, procedure or preference is never session state; the forget applies only to a candidate at the revision read. `POST /api/review` runs it now; `/health` `candidate_review` reports the last run.
+
 ## 0.12.0
 
 - With the encoder answering, `memory_search` and the task match rank by reciprocal rank fusion of the full-text list and the cosine list (k 60, each list 20 deep or `limit` if deeper; ties to the higher cosine, then the lower id), the offline eval's configuration c. `ranking` is `rrf`. Each hit's `why` names its place in each list.

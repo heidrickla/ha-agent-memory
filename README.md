@@ -18,7 +18,7 @@ It carries storage, namespaces, FTS5 and embedding retrieval, progressive MCP to
 
 ## Tools
 
-`memory_namespace`, `memory_bootstrap`, `memory_search`, `memory_get`, `memory_timeline`, `memory_project_context`, `memory_answer`, `memory_question_add`, `memory_questions`, `memory_store`, `memory_update`, `memory_corroborate`, `memory_forget`, `memory_session_close`, `memory_export`, `memory_anchors`, `memory_anchor_report`, `memory_anchor_sweep`. Flow: `bootstrap` → `search` → `get` selected ids, or `project_context(namespace, task)` for one bounded packet with a reason per record. `bootstrap` lists active records and counts candidates in `candidates_pending`; `memory_timeline` lists candidates for review with their revisions, `memory_update(id, revision, {status: active})` promotes one, `memory_forget` drops it.
+`memory_namespace`, `memory_bootstrap`, `memory_search`, `memory_get`, `memory_timeline`, `memory_project_context`, `memory_answer`, `memory_question_add`, `memory_questions`, `memory_store`, `memory_update`, `memory_corroborate`, `memory_forget`, `memory_session_close`, `memory_export`, `memory_anchors`, `memory_anchor_report`, `memory_anchor_sweep`. Flow: `bootstrap` → `search` → `get` selected ids, or `project_context(namespace, task)` for one bounded packet with a reason per record. `bootstrap` lists active records and counts candidates in `candidates_pending`; `memory_timeline` lists candidates for review with their revisions (the nightly [candidate review](#candidate-review) forgets duplicates and session state first), `memory_update(id, revision, {status: active})` promotes one, `memory_forget` drops it.
 
 ## Write protocol
 
@@ -78,6 +78,18 @@ embed_timeout_s: 2
 ```
 
 Measure a retrieval change offline before shipping it: `python tools/retrieval-eval/eval.py . --embeddings tools/retrieval-eval/embeddings.json` ranks the frozen queries through `agent_memory/embed.py` with the vectors `embed_eval.py` fetched.
+
+## Candidate review
+
+Each night at `review_at` (local `HH:MM`; absent means 03:00, `off` turns it off) the enrichment model reads every pending candidate beside the five records nearest it that its namespace's search reaches (active records, and candidates written earlier) and returns one verdict. It forgets; it never promotes. `POST /api/review` (the `delete` scope) runs it at once; `/health` `candidate_review` carries the last run.
+
+| Verdict | Applied when | Effect |
+|---|---|---|
+| `duplicate` | the named record was shown, is not a session summary standing in for another type, and holds every number, version, path, identifier and quoted phrase in the candidate | forgotten |
+| `session-state` | the candidate is not a decision, constraint, requirement, procedure or preference | forgotten |
+| `keep`, a failed call, or a guard refusing | always | stays for the agent review at session start |
+
+A forget applies only while the record is a candidate at the revision the model read, and its audit row names the verdict, the record it duplicates, the model and the reason. Frozen eval (`tools/review-eval/`, the 50 candidates agents had reviewed): 0 of 13 promoted forgotten, 13 of 37 forgotten.
 
 ## Standing questions
 

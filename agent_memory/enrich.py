@@ -121,6 +121,21 @@ class Ollama:
             doc = json.load(resp)
         return (doc.get("message") or {}).get("content", "")
 
+    def judge(self, system: str, user: str, schema: dict, max_tokens: int, model: str = "") -> str:
+        """A JSON reply under `schema` (Ollama compiles a schema given as `format`): the candidate review's call."""
+        body = {
+            "model": model or self.model,
+            "stream": False,
+            "format": schema,
+            "think": False,
+            "options": {"temperature": 0.1, "num_predict": max_tokens},
+            "messages": [{"role": "system", "content": system}, {"role": "user", "content": user}],
+        }
+        req = urllib.request.Request(f"{self.base}/api/chat", data=json.dumps(body).encode(), headers={"Content-Type": "application/json"})
+        with urllib.request.urlopen(req, timeout=self.timeout) as resp:
+            doc = json.load(resp)
+        return (doc.get("message") or {}).get("content", "")
+
 
 # Output caps: the server is shared with voice and failover traffic, so a runaway reply must not hold a
 # slot for minutes. Measured Bonsai extractions run about 400 tokens; answers are cut to ANSWER_CHARS anyway.
@@ -149,7 +164,7 @@ class OpenAIChat:
         except (urllib.error.URLError, OSError, TimeoutError):
             return False
 
-    def _chat(self, model: str, system: str, user: str, max_tokens: int, json_out: bool) -> str:
+    def _chat(self, model: str, system: str, user: str, max_tokens: int, json_out: bool, schema: dict | None = None) -> str:
         body = {
             "model": model or self.model,
             "stream": False,
@@ -160,7 +175,7 @@ class OpenAIChat:
             "messages": [{"role": "system", "content": system}, {"role": "user", "content": user}],
         }
         if json_out:
-            body["response_format"] = {"type": "json_schema", "json_schema": {"name": "memories", "schema": EXTRACT_SCHEMA}}
+            body["response_format"] = {"type": "json_schema", "json_schema": {"name": "memories", "schema": EXTRACT_SCHEMA} if schema is None else {"name": "reply", "schema": schema}}
         req = urllib.request.Request(f"{self.base}/chat/completions", data=json.dumps(body).encode(), headers={"Content-Type": "application/json"})
         with urllib.request.urlopen(req, timeout=self.timeout) as resp:
             doc = json.load(resp)
@@ -176,6 +191,10 @@ class OpenAIChat:
 
     def extract(self, namespace: str, notes: str, model: str = "") -> str:
         return self._chat(model, INSTRUCTIONS, f"Repository namespace: {namespace}\n\nSession notes:\n{notes}", EXTRACT_TOKENS, json_out=True)
+
+    def judge(self, system: str, user: str, schema: dict, max_tokens: int, model: str = "") -> str:
+        """A JSON reply under `schema`: the candidate review's call."""
+        return self._chat(model, system, user, max_tokens, json_out=True, schema=schema)
 
 
 def client_for(url: str, model: str, timeout_s: int = 120) -> Ollama | OpenAIChat:

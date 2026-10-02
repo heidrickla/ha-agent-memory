@@ -42,3 +42,5 @@ A namespace in `hubs` is one whose sessions work on other repositories. Its `mem
 | `embed_url` | absent: full-text only | OpenAI-style `/v1` base URL serving embeddings. |
 | `embed_model` | `qwen3-emb-0.6b` | The embedding model's name on that server. |
 | `embed_timeout_s` | 2 | Wait for a query's vector before answering from full-text search, 0.2 to 30. |
+
+`review_at` (local `HH:MM`, absent means 03:00, `off` turns it off) is the nightly candidate review: the enrichment model forgets candidates that repeat a record their namespace already reaches or report only what one session did, and leaves the rest for an agent. `/health` `candidate_review` shows the last run; `POST /api/review` with the `delete` scope runs it now.

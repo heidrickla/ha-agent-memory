@@ -113,3 +113,4 @@ SQLite with FTS5 and a float32 embeddings table, in the add-on. Measured 2026-09
 - Codex memories are reviewed before import (the owner, 2026-09-28).
 - `AGENTS.md` is the only always-loaded source; no pinning; per-agent tokens; server-owned identity and status; integer revisions; only session-close events spool offline; a manifest decides migration (the owner chose Codex's simpler design, 2026-09-28).
 - Candidates are reviewed by the agent at session start (the owner, 2026-09-28).
+- The enrichment model reviews candidates each night, forget only: duplicates and session state go, promotion stays with the agent (the owner, 2026-10-02).

@@ -781,6 +781,24 @@ class Store:
                 self.audit(client, "forget_hard" if hard else "forget", record_id=rid)
         return bool(cur.rowcount)
 
+    def forget_candidate(self, rid: str, revision: int, client: str, detail: str) -> bool:
+        """Forget a record only while it is a live candidate at `revision`: the state a reviewer read."""
+        with self.transaction():
+            cur = self.db.execute(
+                "update memories set deleted_at=?, status='deleted', revision=revision+1 where id=? and status='candidate' and revision=? and deleted_at is null",
+                (now_iso(), rid, revision),
+            )
+            if cur.rowcount:
+                self.db.execute("delete from embeddings where record_id=?", (rid,))
+                self.audit(client, "forget", record_id=rid, detail=detail)
+        return bool(cur.rowcount)
+
+    def pending_candidates(self, limit: int = 500) -> list[dict]:
+        """Live candidates in every namespace, oldest first."""
+        with self.lock:
+            rows = self.db.execute(f"select * from memories where {self._live(('candidate',))} order by created_at, id limit ?", ("candidate", limit)).fetchall()
+            return [self._row(r) for r in rows]
+
     def purge(self, deleted_days: int) -> int:
         cutoff = (dt.datetime.now(dt.UTC) - dt.timedelta(days=deleted_days)).isoformat(timespec="seconds")
         with self.transaction():

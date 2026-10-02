@@ -30,6 +30,7 @@ import embed
 import enrich
 import mcp
 import page
+import review
 from store import Store
 
 LOG = logging.getLogger("agent-memory")
@@ -43,6 +44,11 @@ REST_GET = {
     "/api/context": "memory_project_context",
     "/api/namespaces": "memory_timeline",
 }
+
+
+def review_at(options: dict) -> str:
+    """`HH:MM` or `off`. Absent means 03:00: the Supervisor applies option defaults only at install."""
+    return str(options.get("review_at") or "03:00").strip()
 
 
 def load_options(path: str) -> dict:
@@ -112,6 +118,7 @@ class App:
         self.encoder = embed.encoder_from(options)
         self.memory.encoder = self.encoder
         self.indexer = embed.Indexer(self.store, self.encoder) if self.encoder else None
+        self.reviewer = review.Reviewer(self.store, self.worker, self.memory, self.encoder)
         self.started = time.time()
         self.requests = 0
         self.denied = 0
@@ -133,6 +140,7 @@ class App:
             # Not part of `status`: search answers from FTS whenever the encoder does not.
             "embeddings": self.indexer.state() if self.indexer else {"encoder": "off"},
             "anchor_sweep": self.memory.last_sweep or {"at": None},
+            "candidate_review": {**self.reviewer.state(), "review_at": review_at(self.options)},
             "requests": self.requests,
             "denied": self.denied,
             "clients": [c.get("name") for c in self.auth.clients],
@@ -254,6 +262,12 @@ def make_handler(app: App):
                     self._send(202, b"")
                     return
                 self._json(200, replies[0] if len(replies) == 1 and not isinstance(body, list) else replies)
+            elif path == "/api/review":
+                # It forgets records, so it needs what memory_forget needs.
+                if not mcp.permits(scopes, mcp.TOOL_SCOPE["memory_forget"]):
+                    self._json(403, {"error": f"client {name!r} lacks the {mcp.TOOL_SCOPE['memory_forget']!r} scope"})
+                else:
+                    self._json(200, app.reviewer.run(int(body.get("limit") or 500)))
             elif path.startswith("/api/"):
                 tool = "memory_" + path[len("/api/") :]
                 needed = mcp.TOOL_SCOPE.get(tool)
@@ -299,6 +313,18 @@ def anchor_sweeps(app: App, stop: threading.Event) -> None:
             LOG.exception("anchor sweep failed")
 
 
+def candidate_reviews(app: App, stop: threading.Event) -> None:
+    """The nightly candidate review at `review_at`, local time."""
+    at = review_at(app.options)
+    if at == "off":
+        return
+    while not stop.wait(review.seconds_until(at)):
+        try:
+            app.reviewer.run()
+        except Exception:
+            LOG.exception("candidate review failed")
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--options", required=True)
@@ -312,6 +338,7 @@ def main(argv: list[str] | None = None) -> int:
     threading.Thread(target=housekeeping, args=(app, stop), name="housekeeping", daemon=True).start()
     threading.Thread(target=app.worker.loop, args=(stop,), name="enrichment", daemon=True).start()
     threading.Thread(target=anchor_sweeps, args=(app, stop), name="anchors", daemon=True).start()
+    threading.Thread(target=candidate_reviews, args=(app, stop), name="review", daemon=True).start()
     if app.indexer:
         threading.Thread(target=app.indexer.loop, args=(stop,), name="embeddings", daemon=True).start()
     embedding = f"{app.encoder.model} at {app.encoder.base}" if app.encoder else "off"
