@@ -13,6 +13,7 @@ by name: what it writes carries that name as `agent`, whatever the request says.
 from __future__ import annotations
 
 import argparse
+import datetime as dt
 import hashlib
 import hmac
 import json
@@ -150,6 +151,11 @@ class App:
         rows = self.store.db.execute("select * from audit order by seq desc limit ?", (n,)).fetchall()
         return [dict(r) for r in rows]
 
+    def panel_data(self) -> dict:
+        now = dt.datetime.now(dt.UTC)
+        since = (now - dt.timedelta(hours=24)).isoformat(timespec="seconds")
+        return {"now": now, "health": self.health(), "counts": self.store.panel_counts(since), "audit": self.audit_tail()}
+
 
 def make_handler(app: App):
     class Handler(BaseHTTPRequestHandler):
@@ -201,7 +207,7 @@ def make_handler(app: App):
                 if not self._ingress():
                     self._send(404, b"not found\n", "text/plain; charset=utf-8")
                     return
-                self._send(200, page.render(app.health(), app.store.namespaces(), app.audit_tail()).encode(), "text/html; charset=utf-8")
+                self._send(200, page.render(app.panel_data()).encode(), "text/html; charset=utf-8")
             elif path == "/mcp":
                 self._send(405, b"", extra={"Allow": "POST"})
             elif path.startswith("/api/"):

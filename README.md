@@ -14,7 +14,7 @@ It carries storage, namespaces, FTS5 and embedding retrieval, progressive MCP to
 | Budgets | bootstrap 500 tokens over the whole response (2,000 bytes), search 750, records 2000, packet 4000 (hard limit 8000); every response reports its estimate and truncation |
 | Auth | per-client bearer token (sha256 in options) or source address; scopes read, write, delete, export, admin, checked by one rule for MCP tools and REST routes; a token client is recorded as the writer |
 | Filtering | every persisted field and queued payload: credentials, key material, JWTs, URL passwords and the `do-not-store` marker are refused and audited by field and pattern name; every database write passes the same screen, and audit context carrying a secret is kept as `[screened:<pattern>]` |
-| Page | ingress only, dark: health, namespaces, queue, audit tail |
+| Page | ingress only, dark, drawn as graphics: status tiles, records by type and status, namespaces, calls per hour, model servers and encoder, nightly review and anchor sweep, latest calls |
 
 ## Tools
 

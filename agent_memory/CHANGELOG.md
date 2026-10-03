@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.16.0
+
+- The ingress page is drawn as graphics: status tiles; records by type and status; namespaces as bars of active and candidate records with the last update; calls per hour over the last 24 hours, by action and by client, and the share of searches that found records; the model servers by tier with jobs, and the encoder's current vectors; the nightly candidate review and the anchor sweep. Server-side HTML and inline SVG, no script. The latest calls fold into a table.
+
 ## 0.15.0
 
 - `ollama_direct_urls`: model servers in a lower tier, asked only while `ollama_url` and `ollama_fallback_url` have no live server. With the Voice Bridge's router as `ollama_url`, the hosts are asked direct only while the bridge is down. `/health` `enrichment.servers` names each server's tier.

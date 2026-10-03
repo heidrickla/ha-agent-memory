@@ -1048,6 +1048,22 @@ class Store:
         rows = self.db.execute("select namespace, count(*) as n, max(updated_at) as last from memories where deleted_at is null group by namespace order by namespace").fetchall()
         return [dict(r) for r in rows]
 
+    def panel_counts(self, since: str) -> dict:
+        """Counts for the ingress page: live records by namespace, status and type; audit rows and searches since `since`."""
+        namespaces: dict[str, dict] = {}
+        for r in self.db.execute("select namespace, status, count(*) as n, max(updated_at) as last from memories where deleted_at is null group by namespace, status"):
+            ns = namespaces.setdefault(r["namespace"], {"status": {}, "last": ""})
+            ns["status"][r["status"]] = r["n"]
+            ns["last"] = max(ns["last"], r["last"] or "")
+        types: dict[str, dict[str, int]] = {}
+        for r in self.db.execute("select type, status, count(*) as n from memories where deleted_at is null group by type, status"):
+            types.setdefault(r["type"], {})[r["status"]] = r["n"]
+        hours = {r[0]: r[1] for r in self.db.execute("select substr(at, 1, 13), count(*) from audit where at >= ? group by 1", (since,))}
+        actions = {r[0]: r[1] for r in self.db.execute("select action, count(*) from audit where at >= ? group by 1", (since,))}
+        clients = {r[0]: r[1] for r in self.db.execute("select client, count(*) from audit where at >= ? group by 1", (since,))}
+        total, hits = self.db.execute("select count(*), coalesce(sum(hits > 0), 0) from queries where at >= ?", (since,)).fetchone()
+        return {"namespaces": namespaces, "types": types, "hours": hours, "actions": actions, "clients": clients, "searches": {"total": total, "hits": hits}}
+
     RENAME_PREFIX_RE = re.compile(r"(github|gitea)/[\w.-]+/")
 
     def rename_namespaces(self, old: str, new: str, client: str = "system") -> dict[str, int]:
