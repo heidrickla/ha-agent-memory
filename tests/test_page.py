@@ -76,7 +76,7 @@ def data(**over):
 
 def test_page_draws_every_card_from_live_shaped_data():
     out = page.render(data())
-    for title in ("Records", "Namespaces", "Activity, last 24 h", "Models", "Maintenance"):
+    for title in ("Records", "Namespaces", "Audit, last 24 h", "Models", "Maintenance"):
         assert f"<span>{title}</span>" in out
     assert "2 of 3 live" in out  # the model servers tile counts live servers
     assert "1 in flight" in out and "tier 0" in out
@@ -85,14 +85,14 @@ def test_page_draws_every_card_from_live_shaped_data():
     assert "forgotten, duplicate" in out and "next at 03:00" in out
     assert "3 anchors checked" in out and "4101 entities" in out
     assert "architectural decision" in out  # type names read as words
-    assert "59 calls" in out  # 24 h total in the activity card's corner
+    assert "59 rows" in out  # 24 h total in the audit card's corner
     assert "other <b>2</b>" in out  # actions past the top six are folded
 
 
 def test_hour_columns_carry_their_count_and_the_busiest_hour():
     out = page.render(data())
     assert "busiest hour 40" in out
-    assert ": 40 calls</title>" in out and ": 12 calls</title>" in out
+    assert ": 40 audit rows</title>" in out and ": 12 audit rows</title>" in out
     assert out.count("<rect") == 24 + 2  # a hover target per hour, a column per hour with calls
 
 
@@ -121,7 +121,7 @@ def test_empty_store_draws_empty_states():
     h = {**HEALTH, "enrichment": {"configured": False}, "embeddings": {"encoder": "off"}, "candidate_review": {"review_at": "03:00"}, "anchor_sweep": {"at": None}}
     out = page.render(data(counts=empty, audit=[], health=h))
     assert out.count("Nothing stored yet.") == 2
-    assert "No calls yet." in out and "busiest hour 0" in out
+    assert "No audit rows yet." in out and "busiest hour 0" in out
     assert "Off: no model server configured" in out and "search is full-text only" in out
     assert "No run yet; next at 03:00." in out and "No sweep yet." in out
     assert ">-</text>" in out  # the search ring with nothing to count

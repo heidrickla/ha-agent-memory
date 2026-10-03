@@ -209,7 +209,7 @@ def namespaces_card(d: dict[str, Any]) -> str:
 
 
 def hours_chart(d: dict[str, Any]) -> str:
-    """Calls per hour over the last 24 hours, oldest on the left, as SVG columns."""
+    """Audit rows per hour over the last 24 hours, oldest on the left, as SVG columns."""
     now: dt.datetime = d["now"]
     counts: dict[str, int] = d["counts"]["hours"]
     slots = [now - dt.timedelta(hours=i) for i in range(23, -1, -1)]
@@ -221,7 +221,7 @@ def hours_chart(d: dict[str, Any]) -> str:
         x = i * (bw + gap)
         bh = 0 if n == 0 else max(2.0, h * n / top)
         hour = t.astimezone().strftime("%H:00")
-        tip = f"<title>{hour}: {n} calls</title>"
+        tip = f"<title>{hour}: {n} audit rows</title>"
         cols.append(f'<rect x={x} y=0 width={bw} height={h} style="fill:transparent">{tip}</rect>')
         if bh:
             cols.append(f'<rect x={x} y={h - bh:.1f} width={bw} height={bh:.1f} rx=2 style="fill:var(--s1)">{tip}</rect>')
@@ -231,8 +231,8 @@ def hours_chart(d: dict[str, Any]) -> str:
     axis = f'<line x1=0 y1={h + 0.5} x2={width} y2={h + 0.5} style="stroke:var(--line)"/>'
     busiest = max(values)
     return (
-        f'<svg viewBox="0 0 {width} {h + 18}" width="100%" style="max-width:48rem" role=img aria-label="calls per hour, last 24 hours, busiest hour {busiest}">'
-        f"{axis}{''.join(cols)}</svg><div class='small muted'>calls per hour, last 24 h; busiest hour {busiest}</div>"
+        f'<svg viewBox="0 0 {width} {h + 18}" width="100%" style="max-width:48rem" role=img aria-label="audit rows per hour, last 24 hours, busiest hour {busiest}">'
+        f"{axis}{''.join(cols)}</svg><div class='small muted'>audit rows per hour: writes, jobs and refusals; reads are not audited. Busiest hour {busiest}</div>"
     )
 
 
@@ -255,16 +255,16 @@ def activity_card(d: dict[str, Any]) -> str:
         for a in d["audit"]
     )
     table = (
-        f"<details><summary>Latest calls ({len(d['audit'])})</summary><table><tr><th>time</th><th>client</th><th>action</th><th>namespace</th><th>detail</th></tr>{rows}</table></details>"
+        f"<details><summary>Latest audit rows ({len(d['audit'])})</summary><table><tr><th>time</th><th>client</th><th>action</th><th>namespace</th><th>detail</th></tr>{rows}</table></details>"
         if rows
-        else "<p class='small muted'>No calls yet.</p>"
+        else "<p class='small muted'>No audit rows yet.</p>"
     )
     body = (
         f"<div class=split><div style='flex:1;min-width:18rem'>{hours_chart(d)}</div>{ring(s['hits'], s['total'], 'searches that found records')}</div>"
         f"<h3>By action</h3>{stacked(top)}<h3>By client</h3>{stacked(by_client)}"
         f"<p class='small muted'>Clients configured: {configured or 'none'}</p>{table}"
     )
-    return card("Activity, last 24 h", body, "wide", f"<span class='small muted'>{total} calls</span>")
+    return card("Audit, last 24 h", body, "wide", f"<span class='small muted'>{total} rows</span>")
 
 
 def models_card(d: dict[str, Any]) -> str:
