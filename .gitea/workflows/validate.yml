@@ -12,33 +12,50 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        timeout-minutes: 15
       - uses: actions/setup-python@v5
+        timeout-minutes: 15
         with:
           python-version: "3.12"
 
       # Everything pinned and pip-installed: the runner has no Docker actions
       # and no preinstalled linters.
       - name: Install
+        timeout-minutes: 15
         run: >-
           python -m pip install --quiet "ruff==0.15.21" "yamllint==1.35.1"
           "shellcheck-py==0.10.0.1" "pytest==8.3.4"
 
       - name: ruff
+        timeout-minutes: 15
         run: |
           python -m ruff check .
           python -m ruff format --check .
 
       - name: yamllint
+        timeout-minutes: 15
         run: >-
           yamllint -d "{extends: relaxed, rules: {line-length: {max: 260}, comments: {min-spaces-from-content: 1}}}"
           repository.yaml agent_memory/config.yaml agent_memory/build.yaml agent_memory/translations/en.yaml
           .gitea/workflows/validate.yml
 
       - name: shellcheck
+        timeout-minutes: 15
         run: shellcheck agent_memory/run.sh
 
       # The server runs on the base image's python3 (3.12) with SQLite FTS5;
       # the tests run the store, the MCP and REST routes and the worker against
       # fake model servers. The image is built on the host by `ha apps rebuild`.
       - name: Tests
-        run: python -m pytest -q tests -p no:cacheprovider
+        timeout-minutes: 15
+        run: python -m pytest --durations=15 --junitxml=reports/junit-1.xml -q tests -p no:cacheprovider
+
+      # each test's time and result, kept whatever the outcome: the forge shows no job log
+      - name: test results
+        if: always()
+        timeout-minutes: 5
+        uses: actions/upload-artifact@ff15f0306b3f739f7b6fd43fb5d26cd321bd4de5 # v3.2.1
+        with:
+          name: test-results-${{ github.job }}
+          path: reports/
+          retention-days: 14
