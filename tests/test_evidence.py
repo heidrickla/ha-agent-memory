@@ -125,3 +125,40 @@ def test_an_unknown_stance_is_refused(store):
 
 def test_corroborating_a_missing_record_returns_none(store):
     assert store.corroborate("no-such-id", "x", "corroborates", "desk") is None
+
+
+def test_an_anchor_counts_once_by_its_state_however_often_it_flipped(store):
+    rid = store.store({"namespace": NS, "title": "AGENTS.md says never ssh vault", "content": "x", "type": "constraint", "confidence": 0.95, "anchors": ["path:D:/a.md"]}, "desk")["id"]
+    for _ in range(10):
+        store.report_anchor(rid, "path:D:/a.md", "missing", "sweep")
+        store.report_anchor(rid, "path:D:/a.md", "ok", "sweep")
+    rec = store.get(rid)
+    assert (rec["proof_count"], rec["refutation_count"]) == (0, 0)
+    assert rec["effective_confidence"] == pytest.approx(0.95), "a flapping anchor that resolves leaves the record as written"
+    store.report_anchor(rid, "path:D:/a.md", "missing", "sweep")
+    assert store.get(rid)["refutation_count"] == 1
+    assert store.get(rid)["effective_confidence"] == pytest.approx(0.25), "a missing anchor is one contradiction"
+    store.corroborate(rid, "held on 2026-10-08", "corroborates", "desk")
+    assert (store.get(rid)["proof_count"], store.get(rid)["refutation_count"]) == (1, 1), "a witness still counts beside it"
+
+
+def test_anchor_rows_filed_before_the_column_existed_are_marked_on_open(tmp_path):
+    import sqlite3
+    import uuid
+
+    path = str(tmp_path / "old.db")
+    old = Store(path)
+    rid = old.store({"namespace": NS, "title": "t", "content": "c", "type": "constraint", "confidence": 0.9, "anchors": ["path:AGENTS.md"]}, "desk")["id"]
+    old.corroborate(rid, "anchor drift was seen by hand", "contradicts", "desk")
+    # the table as 0.16.0 and earlier had it, with ten transitions of one anchor
+    old.db.execute("alter table evidence drop column anchor")
+    flips = [("contradicts", "anchor path:AGENTS.md no longer resolves"), ("corroborates", "anchor path:AGENTS.md resolves again")] * 5
+    for stance, quote in flips:
+        old.db.execute("insert into evidence(id, record_id, at, stance, quote) values (?,?,?,?,?)", (str(uuid.uuid4()), rid, "2026-09-28T17:41:48+00:00", stance, quote))
+    old.db.execute("update anchors set last_state='ok' where record_id=?", (rid,))
+    reopened = Store(path)
+    marked = sqlite3.connect(path).execute("select count(*) from evidence where anchor='path:AGENTS.md'").fetchone()[0]
+    assert marked == 10
+    rec = reopened.get(rid)
+    assert (rec["proof_count"], rec["refutation_count"]) == (0, 1), "only the hand-filed contradiction is a witness"
+    assert rec["effective_confidence"] == pytest.approx(0.25)

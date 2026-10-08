@@ -42,7 +42,7 @@ It carries storage, namespaces, FTS5 and embedding retrieval, progressive MCP to
 | `host:` | a client, through `memory_anchor_report` | any host on the LAN |
 | `url:` | a client, through `memory_anchor_report` | any host that can reach the URL |
 
-Each anchor keeps its last definitive state, `unchecked`, `ok` or `missing`, and `unavailable_since` while its checker could not look. A report of `unavailable` keeps the state and files nothing. A change between `ok` and `missing` files one observation on the record. A change of state advances the record's revision; `memory_anchors` lists each anchor with its record's namespace. A record with a missing anchor carries `missing_anchors` in search, get, timeline, bootstrap and project context.
+Each anchor keeps its last definitive state, `unchecked`, `ok` or `missing`, and `unavailable_since` while its checker could not look. A report of `unavailable` keeps the state and files nothing. A change between `ok` and `missing` files one observation in the record's evidence trail. Confidence counts an anchor once, by its state now: one contradiction while it is `missing`, nothing once it resolves; witnesses (`memory_corroborate`) count as before. A change of state advances the record's revision; `memory_anchors` lists each anchor with its record's namespace. A record with a missing anchor carries `missing_anchors` in search, get, timeline, bootstrap and project context.
 
 ## Embedding retrieval
 

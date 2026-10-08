@@ -219,7 +219,8 @@ def test_anchor_reports_file_evidence_only_on_transitions(store):
     assert store.get(r["id"])["refutation_count"] == 1, "a repeated sweep does not pile contradictions"
     assert store.report_anchor(r["id"], "entity:sensor.gone", "ok", "sweep")["filed"] == "corroborates"
     assert store.report_anchor(r["id"], "entity:sensor.gone", "ok", "sweep")["filed"] == ""
-    assert store.get(r["id"])["proof_count"] == 1
+    assert sorted(e["stance"] for e in store.evidence(r["id"])) == ["contradicts", "corroborates"], "the trail keeps both transitions"
+    assert (store.get(r["id"])["proof_count"], store.get(r["id"])["refutation_count"]) == (0, 0), "a resolved anchor is no witness"
     fresh = store.store(rec(anchors=["entity:sensor.new"]), "desk")
     assert store.report_anchor(fresh["id"], "entity:sensor.new", "ok", "sweep")["filed"] == "", "a first ok files nothing"
 

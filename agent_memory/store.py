@@ -57,6 +57,7 @@ CREATE_STATUSES = ("active", "candidate")
 UPDATE_TRANSITIONS = {("candidate", "active"), ("active", "candidate")}
 UPDATABLE = ("title", "content", "type", "confidence", "status", "topics", "project_scopes", "expires_at", "sensitivity", "anchors")
 ANCHOR_STATES = ("ok", "missing", "unavailable")
+ANCHOR_QUOTE = re.compile(r"anchor (.+) (?:no longer resolves|resolves again)")
 SCHEMA = """
 create table if not exists memories (
   id text primary key, created_at text not null, updated_at text not null,
@@ -86,7 +87,7 @@ create index if not exists jobs_status on jobs(status, created_at);
 create table if not exists evidence (
   id text primary key, record_id text not null, at text not null,
   stance text not null default 'corroborates', quote text not null,
-  agent text not null default '', source_session text not null default ''
+  agent text not null default '', source_session text not null default '', anchor text
 );
 create index if not exists evidence_record on evidence(record_id, stance);
 create table if not exists queries (
@@ -414,10 +415,25 @@ class Store:
 
     def _migrate(self) -> None:
         """Columns added after a database was created. Existing records start at revision 1."""
-        added = {"memories": ("revision", "integer not null default 1"), "anchors": ("unavailable_since", "text"), "receipts": ("expired_at", "text")}
+        added = {
+            "memories": ("revision", "integer not null default 1"),
+            "anchors": ("unavailable_since", "text"),
+            "receipts": ("expired_at", "text"),
+            "evidence": ("anchor", "text"),
+        }
         for table, (column, decl) in added.items():
             if column not in {r[1] for r in self.db.execute(f"pragma table_info({table})")}:
                 self.db.execute(f"alter table {table} add column {column} {decl}")
+                if table == "evidence":
+                    self._mark_anchor_evidence()
+
+    def _mark_anchor_evidence(self) -> None:
+        """Rows `report_anchor` filed before evidence carried its anchor, known by the quote it writes."""
+        rows = self.db.execute("select id, quote from evidence where anchor is null and quote like 'anchor %'").fetchall()
+        for row in rows:
+            m = ANCHOR_QUOTE.fullmatch(row["quote"])
+            if m:
+                self.db.execute("update evidence set anchor=? where id=?", (m.group(1), row["id"]))
 
     @contextlib.contextmanager
     def transaction(self):
@@ -488,11 +504,17 @@ class Store:
         what is left, so one credible refusal outweighs two agreements. Both counts travel with the
         record, because a 0.9 standing on four witnesses and a 0.9 somebody typed are not the same
         claim and the reader has to be able to tell them apart.
+
+        An anchor counts once, by its state now: one contradiction while it is missing, nothing once
+        it resolves. Its transitions stay in the trail but are not witnesses; counted, an anchor that
+        flapped ten times held a true record at 0.001 (2026-09-28, relative paths judged against
+        each checker's working directory).
         """
         with self.lock:
-            rows = self.db.execute("select stance, count(*) n from evidence where record_id=? group by stance", (rid,)).fetchall()
+            rows = self.db.execute("select stance, count(*) n from evidence where record_id=? and anchor is null group by stance", (rid,)).fetchall()
+            missing = self.db.execute("select count(*) from anchors where record_id=? and last_state='missing'", (rid,)).fetchone()[0]
         counts = {r["stance"]: r["n"] for r in rows}
-        pro, con = counts.get("corroborates", 0), counts.get("contradicts", 0)
+        pro, con = counts.get("corroborates", 0), counts.get("contradicts", 0) + missing
         if not pro and not con:
             return {"proof_count": 0, "refutation_count": 0, "effective_confidence": round(float(asserted), 4)}
         conf = 0.5
@@ -522,11 +544,12 @@ class Store:
             self.db.execute("update memories set updated_at=?, revision=revision+1 where id=?", (now_iso(), rid))
         return self.get(rid)
 
-    def _evidence(self, rid: str, namespace: str, quote: str, stance: str, client: str, agent: str = "", source_session: str = "") -> None:
-        """One observation on a record, inside the caller's transaction; the caller advances the revision."""
+    def _evidence(self, rid: str, namespace: str, quote: str, stance: str, client: str, agent: str = "", source_session: str = "", anchor: str | None = None) -> None:
+        """One observation on a record, inside the caller's transaction; the caller advances the revision.
+        `anchor` marks a transition `report_anchor` filed, which `weight` does not count as a witness."""
         self.db.execute(
-            "insert into evidence(id, record_id, at, stance, quote, agent, source_session) values (?,?,?,?,?,?,?)",
-            (str(uuid.uuid4()), rid, now_iso(), stance, quote.strip()[:1000], agent or client, source_session),
+            "insert into evidence(id, record_id, at, stance, quote, agent, source_session, anchor) values (?,?,?,?,?,?,?,?)",
+            (str(uuid.uuid4()), rid, now_iso(), stance, quote.strip()[:1000], agent or client, source_session, anchor),
         )
         self.audit(client, stance, namespace, rid, quote.strip()[:200])
 
@@ -703,10 +726,10 @@ class Store:
                 self.db.execute("update anchors set last_state=?, last_checked=?, unavailable_since=null where record_id=? and anchor=?", (state, ts, rid, anchor))
                 if state == "missing" and before != "missing":
                     filed = "contradicts"
-                    self._evidence(rid, row["namespace"], f"anchor {anchor} no longer resolves", filed, client)
+                    self._evidence(rid, row["namespace"], f"anchor {anchor} no longer resolves", filed, client, anchor=anchor)
                 elif state == "ok" and before == "missing":
                     filed = "corroborates"
-                    self._evidence(rid, row["namespace"], f"anchor {anchor} resolves again", filed, client)
+                    self._evidence(rid, row["namespace"], f"anchor {anchor} resolves again", filed, client, anchor=anchor)
             if changed:
                 bump = ", updated_at=?" if filed else ""
                 self.db.execute(f"update memories set revision=revision+1{bump} where id=?", (ts, rid) if filed else (rid,))

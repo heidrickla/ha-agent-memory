@@ -209,7 +209,8 @@ def test_an_anchor_state_change_advances_the_revision(store):
     for state, expected in steps:
         store.report_anchor(rid, "entity:sensor.kiosk", state, "sweep")
         assert rev() == expected, (state, rev())
-    assert (store.get(rid)["proof_count"], store.get(rid)["refutation_count"]) == (1, 1)
+    assert sorted(e["stance"] for e in store.evidence(rid)) == ["contradicts", "corroborates"]
+    assert (store.get(rid)["proof_count"], store.get(rid)["refutation_count"]) == (0, 0), "a resolved anchor is no witness"
 
 
 def test_a_read_never_sees_a_transaction_another_thread_holds_open(store):

@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.16.1
+
+- An anchor counts once toward a record's confidence, by its state now: one contradiction while it is missing, nothing once it resolves. Its transitions stay in the evidence trail. Rows filed before evidence carried its anchor are marked on start.
+
 ## 0.16.0
 
 - The ingress page is drawn as graphics: status tiles; records by type and status; namespaces as bars of active and candidate records with the last update; audit rows per hour over the last 24 hours, by action and by client, and the share of searches that found records; the model servers by tier with jobs, and the encoder's current vectors; the nightly candidate review and the anchor sweep. Server-side HTML and inline SVG, no script. The latest audit rows fold into a table.
