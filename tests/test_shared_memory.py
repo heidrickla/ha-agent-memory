@@ -24,6 +24,7 @@ OTHER = "gitea/heidrickla/ha-loops"
 TOKEN = "claude-token-for-tests-0123456789abcdef"
 SECRET = "ghp_" + "a" * 36  # the github_token pattern's shape, not a credential
 OPTIONS = {
+    "summary_candidates": True,  # these suites cover the kept-summary path
     "clients": [
         {"name": "desktop", "ip": "127.0.0.1", "scopes": ["read", "write", "delete", "export"]},
         {"name": "claude", "token_sha256": hashlib.sha256(TOKEN.encode()).hexdigest(), "scopes": ["read", "write"]},
@@ -445,3 +446,21 @@ def test_receipts_past_the_retention_become_tombstones(store):
     old = store.receipt("op-old-0000001")
     assert old["expired"] and old["result"] == {} and old["digest"] == "d"
     assert not store.receipt("op-new-0000001")["expired"] and store.receipt("op-new-0000001")["result"] == {"stored": "y"}
+
+
+def test_a_close_keeps_no_summary_by_default_and_still_queues_extraction(tmp_path):
+    """Agents forgot 87 of the 88 summaries they reviewed by 2026-10-20. The notes carry the summary,
+    so extraction still reads it; the screen still refuses it."""
+    options = {k: v for k, v in OPTIONS.items() if k != "summary_candidates"}
+    app = srv.App({**options, "ollama_url": "http://127.0.0.1:9"}, str(tmp_path))
+    closed = app.memory.session_close(NS, "Built the spool.", "claude-code", "s1", "decided to spool closes only", "desk", True)
+    assert closed["stored"] is None and closed["status"] == "not-kept" and closed["enrichment"] == "queued"
+    assert count(app.store, "type='session-summary'") == 0 and app.store.queue_depth()["queued"] == 1
+    row = app.store.db.execute("select detail from audit where action='session_close'").fetchone()
+    assert row is not None and row[0] == "summary not kept; extraction queued"
+    args = (NS, "Built it.", "claude-code", "s2", "notes", "desk", True, "op-default-0001")
+    first = app.memory.session_close(*args)
+    assert app.memory.session_close(*args) == {**first, "replayed": True} and app.store.queue_depth()["queued"] == 2
+    with pytest.raises(mcp.ToolError, match="not stored"):
+        app.memory.session_close(NS, f"summary {SECRET}", "claude-code", "s3", "notes", "desk", True)
+    assert app.store.queue_depth()["queued"] == 2

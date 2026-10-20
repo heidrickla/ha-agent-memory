@@ -24,7 +24,7 @@ It carries storage, namespaces, FTS5 and embedding retrieval, progressive MCP to
 
 | | |
 |---|---|
-| Status | set by the server: `memory_store` writes `active`; extraction and import write `candidate` through `Store.store_candidate`; session summaries are `candidate`. States `active`, `candidate`, `superseded`, `deleted`; `memory_update` moves `candidate` to `active` and back; only a supersession makes `superseded` and only `memory_forget` makes `deleted` |
+| Status | set by the server: `memory_store` writes `active`; extraction and import write `candidate` through `Store.store_candidate`; a session close's summary is a `candidate` when the `summary_candidates` option is on, and is not kept otherwise (extraction reads it in the notes). States `active`, `candidate`, `superseded`, `deleted`; `memory_update` moves `candidate` to `active` and back; only a supersession makes `superseded` and only `memory_forget` makes `deleted` |
 | Writer | a token client's name replaces `agent`; an address client's `agent` is kept |
 | Revision | an integer on every record, advanced by every mutation (content, anchors, anchor state, evidence, status, supersession, forget, rename). `memory_update(id, revision, changes)` applies only at that revision, anchors and status in the same transaction; a mismatch returns `revision` and `current` (MCP `isError`, REST 409) |
 | Transactions | each mutation and the reads it depends on commit together: an update, a store with its supersession, an anchor report with its evidence, an extraction's candidates with the job's completion, an answer with its job's. Every statement runs under the store lock, so no read sees another thread's open transaction |

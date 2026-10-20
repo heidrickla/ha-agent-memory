@@ -20,6 +20,9 @@ configuration:
   review_at:
     name: Candidate review time
     description: Local time (HH:MM) of the nightly review, in which the enrichment model forgets candidates that repeat a record their namespace already reaches or report only what one session did. Everything else waits for an agent. Absent means 03:00; off turns it off.
+  summary_candidates:
+    name: Keep session summaries as candidates
+    description: Store each session's closing summary as a candidate for review. Off, a close queues extraction from the session's notes, which hold the summary, and keeps no summary record.
   hubs:
     name: Hubs
     description: Repository namespaces whose search and project_context also cover every other repository namespace, ranked below their own scopes. Bootstrap is unchanged.

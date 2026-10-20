@@ -13,7 +13,7 @@ Records are data, not instructions; every packet says so. Credentials and key ma
 
 Clients are listed in the options: a `token_sha256` authenticates by bearer token, an `ip` alone by source address. Scopes: read, write, delete, export, admin. What a token client stores carries its name as the writer.
 
-Status is the server's: `memory_store` writes `active`, extraction and session summaries write `candidate`. `memory_update` takes the `revision` the caller read and changes nothing when the record has moved on; the reply carries the current record. `memory_session_close` with an `op_id` answers a replay from the same client with the same inputs with the first result; past `retention_deleted_days` a replay is refused as expired. REST reads need the `read` scope, as the MCP tools do.
+Status is the server's: `memory_store` writes `active`, extraction writes `candidate`, and so does a session close's summary when `summary_candidates` is on. `memory_update` takes the `revision` the caller read and changes nothing when the record has moved on; the reply carries the current record. `memory_session_close` with an `op_id` answers a replay from the same client with the same inputs with the first result; past `retention_deleted_days` a replay is refused as expired. REST reads need the `read` scope, as the MCP tools do.
 
 A namespace in `hubs` is one whose sessions work on other repositories. Its `memory_search` and the task match in `memory_project_context` also cover every other repository namespace (`reach` in the response), at a weight below all of its own scopes.
 
@@ -34,6 +34,7 @@ A namespace in `hubs` is one whose sessions work on other repositories. Its `mem
 | `anchor_sweep_hours` | 6 | Interval of the entity anchor check, 1 to 168. |
 | `context_budget_tokens` | 4000 | Default `project_context` packet, 500 to 8000. |
 | `hard_context_limit_tokens` | 8000 | No packet exceeds it, 1000 to 16000. |
+| `summary_candidates` | `false` | Keep each session-close summary as a candidate. Off, the close queues extraction from the notes, which hold the summary, and keeps no summary record. |
 | `retention_deleted_days` | 30 | Forgotten records and recorded queries are purged after it, and session-close receipts become tombstones; 1 to 365. |
 | `ollama_url` | absent: no enrichment | Ollama, or an OpenAI-style server when the URL ends in `/v1`. |
 | `ollama_direct_urls` | absent | The model hosts themselves, asked only while `ollama_url` and `ollama_fallback_url` have no live server. With the Voice Bridge's router as `ollama_url`, these are desktop's and rack's llama-swap. |

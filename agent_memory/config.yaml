@@ -1,5 +1,5 @@
 name: Agent Memory
-version: "0.16.3"
+version: "0.17.0"
 slug: agent_memory
 description: Shared, bounded context for Claude Code and Codex over MCP; SQLite and FTS5, no paid model in the path
 url: https://github.com/heidrickla/ha-agent-memory
@@ -52,6 +52,7 @@ options:
   namespace_renames: []
   anchor_sweep_hours: 6
   review_at: "03:00"
+  summary_candidates: false
   context_budget_tokens: 4000
   hard_context_limit_tokens: 8000
   retention_deleted_days: 30
@@ -81,6 +82,7 @@ schema:
       to: match(^(github|gitea)/[\w.-]+/$)
   anchor_sweep_hours: int(1,168)
   review_at: match(^(off|([01][0-9]|2[0-3]):[0-5][0-9])$)?
+  summary_candidates: bool?
   context_budget_tokens: int(500,8000)
   hard_context_limit_tokens: int(1000,16000)
   retention_deleted_days: int(1,365)

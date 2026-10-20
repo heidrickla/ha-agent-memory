@@ -19,6 +19,7 @@ import server as srv
 from store import Store
 
 OPTIONS = {
+    "summary_candidates": True,  # these suites cover the kept-summary path
     "clients": [
         {"name": "desk", "ip": "127.0.0.1", "scopes": ["read", "write", "delete", "export"]},
         {"name": "codex", "token_sha256": hashlib.sha256(b"t0ken-for-tests-0123456789").hexdigest(), "scopes": ["read"]},

@@ -36,6 +36,7 @@ NS = "gitea/heidrickla/ha-management"
 SECRET = "ghp_" + "b" * 36  # the github_token pattern's shape, not a credential
 READER, WRITER = "reader-token-0123456789abcdef", "writer-token-0123456789abcdef"
 OPTIONS = {
+    "summary_candidates": True,  # these suites cover the kept-summary path
     "clients": [
         {"name": "desktop", "ip": "127.0.0.1", "scopes": ["read", "write", "delete", "export"]},
         {"name": "claude", "token_sha256": hashlib.sha256(READER.encode()).hexdigest(), "scopes": ["read", "write"]},

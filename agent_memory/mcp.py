@@ -362,9 +362,10 @@ class Memory:
         return {"forgotten": rid, "recoverable_days": int(self.o.get("retention_deleted_days") or 30)}
 
     def session_close(self, namespace: str, summary: str, agent: str, session: str, notes: str, client: str, enrich: bool, op_id: str | None = None) -> dict:
-        """Store the summary as a candidate and queue extraction from the notes.
+        """Queue extraction from the notes, and with `summary_candidates` store the summary as a candidate.
 
-        The summary is stored as written and refused if it screens. Notes carrying the do-not-store
+        The summary is screened either way and, when kept, stored as written. The hooks send the
+        session's last messages as notes, the summary among them, so extraction reads it either way. Notes carrying the do-not-store
         marker anywhere in the text as sent are refused, so nothing from them is queued; other notes are
         redacted, then cut to NOTES_LIMIT. With `op_id` the result is kept as a receipt in the same
         transaction, bound to the client and every input, and a replay of that id by the same client
@@ -392,24 +393,29 @@ class Memory:
             if replay is not None:
                 return replay
             try:
-                rec = self.store.store_candidate(
-                    {
-                        "namespace": namespace,
-                        "type": "session-summary",
-                        "title": f"Session {session or 'untitled'} ({agent or client})",
-                        "content": summary,
-                        "agent": agent or client,
-                        "source_session": session,
-                        "confidence": 0.7,
-                    },
-                    client,
-                )
+                rec = None
+                if self.o.get("summary_candidates"):
+                    rec = self.store.store_candidate(
+                        {
+                            "namespace": namespace,
+                            "type": "session-summary",
+                            "title": f"Session {session or 'untitled'} ({agent or client})",
+                            "content": summary,
+                            "agent": agent or client,
+                            "source_session": session,
+                            "confidence": 0.7,
+                        },
+                        client,
+                    )
                 job = None
                 if enrich and notes and self.o.get("ollama_url"):
-                    job = self.store.enqueue("extract", namespace, {"summary_id": rec["id"], "agent": agent or client, "session": session, "notes": notes}, client)
+                    job = self.store.enqueue("extract", namespace, {"summary_id": rec["id"] if rec else "", "agent": agent or client, "session": session, "notes": notes}, client)
             except Rejected as err:
                 raise ToolError(f"not stored: {err}") from err
-            result = {"stored": rec["id"], "status": rec["status"], "enrichment_job": job, "enrichment": "queued" if job else ("refused" if notes_refused else "off")}
+            enrichment = "queued" if job else ("refused" if notes_refused else "off")
+            if rec is None:
+                self.store.audit(client, "session_close", namespace, "", f"summary not kept; extraction {enrichment}")
+            result = {"stored": rec["id"] if rec else None, "status": rec["status"] if rec else "not-kept", "enrichment_job": job, "enrichment": enrichment}
             if notes_refused:
                 result["notes_refused"] = notes_refused
             if op_id:
@@ -583,7 +589,7 @@ TOOLS = [
     ("memory_forget", "Soft-delete a record; recoverable for the retention period.", {"id": {"type": "string"}}, ["id"], "delete"),
     (
         "memory_session_close",
-        "Store a compact session summary as a candidate; with notes and a model server configured, queue extraction of candidate memories. Notes carrying the do-not-store marker are refused. A replay with the same op_id returns the first result.",
+        "Close a session: with notes and a model server configured, queue extraction of candidate memories; the summary is kept as a candidate only when the add-on's summary_candidates option is on. Notes carrying the do-not-store marker are refused. A replay with the same op_id returns the first result.",
         {
             "namespace": {"type": "string"},
             "summary": {"type": "string"},

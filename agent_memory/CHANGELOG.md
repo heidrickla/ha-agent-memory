@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.17.0
+
+- `summary_candidates` (default off): a session close keeps its summary as a candidate only when it is on. Off, the close queues extraction from the notes, which hold the summary, keeps no summary record, and writes a `session_close` audit row. Agents forgot 87 of the 88 summaries they had reviewed by 2026-10-20.
+
 ## 0.16.3
 
 - The nightly review forgets an extracted candidate judged session state whatever its type. Extraction's type is the model's guess: of 102 candidates agents forgot on 2026-10-20 after the nightly run had kept them, 89 were extracted, and 39 of those carried a lasting type. A lasting type still protects a record an agent wrote.
