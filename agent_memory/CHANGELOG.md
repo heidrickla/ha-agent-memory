@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.16.3
+
+- The nightly review forgets an extracted candidate judged session state whatever its type. Extraction's type is the model's guess: of 102 candidates agents forgot on 2026-10-20 after the nightly run had kept them, 89 were extracted, and 39 of those carried a lasting type. A lasting type still protects a record an agent wrote.
+
 ## 0.16.2
 
 - `memory_timeline` takes `status` (`active`, `candidate`, `superseded`) and returns `candidates_pending`. Its token budget shows about nine records, so the newest active records had hidden every older candidate from a review; `status="candidate"` reaches them. `/api/timeline` takes `status` too.

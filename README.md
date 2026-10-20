@@ -86,10 +86,10 @@ Each night at `review_at` (local `HH:MM`; absent means 03:00, `off` turns it off
 | Verdict | Applied when | Effect |
 |---|---|---|
 | `duplicate` | the named record was shown, is not a session summary standing in for another type, and holds every number, version, path, identifier and quoted phrase in the candidate | forgotten |
-| `session-state` | the candidate is not a decision, constraint, requirement, procedure or preference | forgotten |
+| `session-state` | the candidate was extracted from session notes, or an agent stored it as a type other than decision, constraint, requirement, procedure or preference | forgotten |
 | `keep`, a failed call, or a guard refusing | always | stays for the agent review at session start |
 
-A forget applies only while the record is a candidate at the revision the model read, and its audit row names the verdict, the record it duplicates, the model and the reason. Frozen eval (`tools/review-eval/`, the 50 candidates agents had reviewed): 0 of 13 promoted forgotten, 13 of 37 forgotten.
+A forget applies only while the record is a candidate at the revision the model read, and its audit row names the verdict, the record it duplicates, the model and the reason. Eval (`tools/review-eval/`, 397 records agents had reviewed): a forget verdict on 188 of 373 they forgot and on 2 of 24 they promoted, each of those 2 a duplicate of an older copy that the eval restores as a candidate.
 
 ## Standing questions
 

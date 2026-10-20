@@ -10,7 +10,7 @@ candidates agents had already reviewed: `tools/review-eval/`.
 | a duplicate must name one of the records shown: active, or a candidate written earlier | any other id keeps the candidate |
 | every number, version, path, identifier and quoted phrase in the candidate appears in the record it duplicates | the model's "states every fact", checked; a candidate adding one keeps |
 | a session summary is never the record that makes another type redundant | a summary says what one session did, and the fact's own record is where it lives |
-| a lasting type (decision, constraint, requirement, procedure, preference) is never session state | the verdict becomes keep |
+| a lasting type (decision, constraint, requirement, procedure, preference) that an agent wrote is never session state | the verdict becomes keep; an extracted record's type is the model's guess |
 | the forget applies only while the record is a candidate at the revision the model read | an edit or a promotion during the call keeps it |
 | a reply that will not parse costs the next model in the chain; a failed candidate is kept | the next run tries it again |
 | one run at a time | a run requested during another waits for it |
@@ -83,6 +83,11 @@ def day(iso: str | None) -> str:
     return (iso or "")[:10] or "unknown"
 
 
+def extracted(cand: dict) -> bool:
+    """Written by the enrichment model from session notes, not stored by an agent."""
+    return (cand.get("enrichment") or "").startswith("extract")
+
+
 def render(cand: dict, nbrs: list[dict]) -> str:
     lines = [f"Candidate (type {cand['type']}, written {day(cand.get('created_at'))}):", cand["title"], cand["content"][:RECORD_CHARS], "", "Existing records:"]
     for n in nbrs:
@@ -148,7 +153,7 @@ class Reviewer:
 
         model, _, server = self.worker._try_models("review", judge)
         verdict, record, reason = found["parsed"]
-        if verdict == "session-state" and cand["type"] in LASTING:
+        if verdict == "session-state" and cand["type"] in LASTING and not extracted(cand):
             verdict, reason = "keep", f"type {cand['type']} lasts; {reason}"
         if verdict == "duplicate":
             held = next(n for n in nbrs if n["id"] == record)

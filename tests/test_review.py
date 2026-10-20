@@ -25,7 +25,7 @@ import datetime as dt
 
 import review
 import server as srv
-from enrich import OpenAIChat
+from enrich import PROMPT_VERSION, OpenAIChat
 
 NS = "gitea/heidrickla/ha-management"
 
@@ -137,6 +137,20 @@ def test_session_state_forgets_but_never_a_lasting_type(tmp_path):
     out = app.reviewer.run()
     assert status(app, gone) == "deleted" and out["forgotten"]["session-state"] == 1
     assert all(status(app, k) == "candidate" for k in kept) and out["kept"] == len(review.LASTING)
+
+
+def test_an_extracted_records_lasting_type_does_not_protect_it(tmp_path):
+    """Extraction's type is the model's guess: on 2026-10-20 agents forgot 102 candidates the nightly
+    run had kept, 89 of them extracted and 39 of those under a lasting type. The guard holds only for
+    a lasting type an agent wrote."""
+    app = app_with(tmp_path, lambda title, user: verdict("session-state"))
+    extracted = {candidate(app, f"Pushed {t}", "The branch was pushed and CI run 15 is green.", typ=t) for t in review.LASTING}
+    for rid in extracted:
+        app.store.db.execute("update memories set enrichment=? where id=?", (f"{PROMPT_VERSION}:job-1", rid))
+    written = candidate(app, "Rule by an agent", "Never write to the Brain.", typ="constraint")
+    out = app.reviewer.run()
+    assert all(status(app, rid) == "deleted" for rid in extracted) and out["forgotten"]["session-state"] == len(review.LASTING)
+    assert status(app, written) == "candidate" and out["kept"] == 1
 
 
 def test_a_record_that_was_not_shown_cannot_be_the_duplicate(tmp_path):
