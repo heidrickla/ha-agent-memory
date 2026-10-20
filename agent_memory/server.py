@@ -238,7 +238,7 @@ def make_handler(app: App):
                 elif path == "/api/get":
                     self._json(200, app.memory.get(one.get("ids", "").split(",")))
                 elif path == "/api/timeline":
-                    self._json(200, app.memory.timeline(one["namespace"], int(one.get("limit", 20))))
+                    self._json(200, app.memory.timeline(one["namespace"], int(one.get("limit", 20)), one.get("status")))
                 elif path == "/api/context":
                     self._json(200, app.memory.project_context(one["namespace"], one.get("task", ""), None, int(one["budget"]) if one.get("budget") else None))
                 elif path == "/api/namespaces":

@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.16.2
+
+- `memory_timeline` takes `status` (`active`, `candidate`, `superseded`) and returns `candidates_pending`. Its token budget shows about nine records, so the newest active records had hidden every older candidate from a review; `status="candidate"` reaches them. `/api/timeline` takes `status` too.
+
 ## 0.16.1
 
 - An anchor counts once toward a record's confidence, by its state now: one contradiction while it is missing, nothing once it resolves. Its transitions stay in the evidence trail. Rows filed before evidence carried its anchor are marked on start.

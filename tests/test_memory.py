@@ -193,6 +193,23 @@ def test_bootstrap_counts_candidates_instead_of_showing_them(memory, store):
     assert {r["id"] for r in store.timeline(NS)} == {pending["id"], settled["id"]}, "the review list keeps candidates"
 
 
+def test_the_review_list_reaches_candidates_behind_active_records(memory, store):
+    """The timeline's token budget shows about nine records; status=candidate reaches a candidate that
+    thirty active records would hide, and every call counts what is still pending."""
+    pending = store.store(rec(title="Older candidate", content="Waiting for review.", status="candidate"), "desk")
+    for n in range(30):
+        store.store(rec(title=f"Settled {n}", content=f"Active record {n}."), "desk")
+    review = mcp.call_tool(memory, "memory_timeline", {"namespace": NS, "status": "candidate"}, "desk", "")
+    assert [i["id"] for i in review["items"]] == [pending["id"]]
+    assert review["candidates_pending"] == 1
+    active = memory.timeline(NS, 100, "active")
+    assert pending["id"] not in {i["id"] for i in active["items"]} and active["truncated"]
+    assert memory.timeline(NS)["candidates_pending"] == 1
+    with pytest.raises(mcp.ToolError):
+        memory.timeline(NS, 20, "deleted")
+    assert "status" in dict(mcp.tool_list()[[t["name"] for t in mcp.tool_list()].index("memory_timeline")])["inputSchema"]["properties"]
+
+
 def test_anchors_are_stored_validated_and_replaced(store):
     r = store.store(rec(anchors=["entity:sensor.b", "path:D:/x/y.txt", "entity:sensor.a"]), "desk")
     assert store.get(r["id"])["anchors"] == ["entity:sensor.a", "entity:sensor.b", "path:D:/x/y.txt"]
