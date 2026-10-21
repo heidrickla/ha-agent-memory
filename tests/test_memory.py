@@ -459,7 +459,7 @@ def test_usage_rows_leave_with_their_records(store):
     kept = store.store(rec(title="Kept"), "desk")["id"]
     store.note_use([gone, kept], "returned")
     store.forget(gone, "desk", hard=True)
-    assert store.db.execute("select record_id from usage").fetchall()[0]["record_id"] == kept
+    assert {r["record_id"] for r in store.db.execute("select record_id from usage").fetchall()} == {kept}, "a hard forget drops its row at once"
     soft = store.store(rec(title="Soft"), "desk")["id"]
     store.note_use([soft], "fetched")
     store.forget(soft, "desk")
