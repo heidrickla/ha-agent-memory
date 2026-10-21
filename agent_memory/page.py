@@ -317,6 +317,7 @@ def maintenance_card(d: dict[str, Any]) -> str:
         forgotten = sorted((rv.get("forgotten") or {}).items())
         parts = [("kept", int(rv.get("kept") or 0), "s1")]
         parts += [(f"forgotten, {k}", int(v), "s2" if i == 0 else "s4") for i, (k, v) in enumerate(forgotten)]
+        parts.append(("expired", int(rv.get("expired") or 0), "s3"))
         parts.append(("failed", int(rv.get("failed") or 0), "crit"))
         split = " ".join(chip("idle", f"{u} {n}") for u, n in (rv.get("servers") or {}).items())
         err = f" {chip('crit', 'error')} {esc(rv['error'])}" if rv.get("error") else ""

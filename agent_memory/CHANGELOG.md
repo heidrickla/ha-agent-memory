@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.17.1
+
+- `candidate_expiry_days` (default 14, `0` off): the nightly review first forgets an extracted candidate no session has promoted that long after it was written, recoverable until `retention_deleted_days`. Candidates an agent stored never expire. It runs whether or not a model is live; `/health` `candidate_review.expired` counts them. Of 24 extracted candidates agents reviewed on 2026-10-21, none was promoted.
+
 ## 0.17.0
 
 - `summary_candidates` (default off): a session close keeps its summary as a candidate only when it is on. Off, the close queues extraction from the notes, which hold the summary, keeps no summary record, and writes a `session_close` audit row. Agents forgot 87 of the 88 summaries they had reviewed by 2026-10-20.

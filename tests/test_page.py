@@ -43,6 +43,7 @@ HEALTH = {
         "at": "2026-10-02T05:55:11+00:00",
         "version": "review-v1",
         "reviewed": 4,
+        "expired": 2,
         "forgotten": {"duplicate": 1, "session-state": 0},
         "kept": 3,
         "failed": 0,
@@ -82,7 +83,7 @@ def test_page_draws_every_card_from_live_shaped_data():
     assert "1 in flight" in out and "tier 0" in out
     assert "searches that found records" in out and "24 of 30" in out
     assert "vectors current" in out and "140 of 140" in out
-    assert "forgotten, duplicate" in out and "next at 03:00" in out
+    assert "forgotten, duplicate" in out and "expired" in out and "next at 03:00" in out
     assert "3 anchors checked" in out and "4101 entities" in out
     assert "architectural decision" in out  # type names read as words
     assert "59 rows" in out  # 24 h total in the audit card's corner

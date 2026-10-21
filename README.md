@@ -81,7 +81,7 @@ Measure a retrieval change offline before shipping it: `python tools/retrieval-e
 
 ## Candidate review
 
-Each night at `review_at` (local `HH:MM`; absent means 03:00, `off` turns it off) the enrichment model reads every pending candidate beside the five records nearest it that its namespace's search reaches (active records, and candidates written earlier) and returns one verdict. It forgets; it never promotes. `POST /api/review` (the `delete` scope) runs it at once; `/health` `candidate_review` carries the last run.
+Each night at `review_at` (local `HH:MM`; absent means 03:00, `off` turns it off) the enrichment model reads every pending candidate beside the five records nearest it that its namespace's search reaches (active records, and candidates written earlier) and returns one verdict. It forgets; it never promotes. Before the verdicts, an extracted candidate still pending `candidate_expiry_days` (default 14, `0` off) after it was written is forgotten, whether or not a model is live; candidates an agent stored never expire. `POST /api/review` (the `delete` scope) runs it at once; `/health` `candidate_review` carries the last run.
 
 | Verdict | Applied when | Effect |
 |---|---|---|

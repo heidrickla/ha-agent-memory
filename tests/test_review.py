@@ -207,6 +207,47 @@ def test_an_unavailable_model_reviews_nothing(tmp_path):
     assert app.worker.ollama.calls == []
 
 
+def days_ago(n: float) -> str:
+    return (dt.datetime.now(dt.UTC) - dt.timedelta(days=n)).isoformat(timespec="seconds")
+
+
+def extracted_candidate(app, title: str, at: str) -> str:
+    rid = candidate(app, title, f"{title} is a fact.", at=at)
+    app.store.db.execute("update memories set enrichment=? where id=?", (f"{PROMPT_VERSION}:job-1", rid))
+    return rid
+
+
+def test_an_extracted_candidate_past_the_expiry_is_forgotten_before_the_verdicts(tmp_path):
+    """No session promoted any of the 24 extracted candidates reviewed on 2026-10-21 (the owner chose a 14-day expiry)."""
+    app = app_with(tmp_path, lambda title, user: verdict("keep"))
+    old = extracted_candidate(app, "Old extract", days_ago(15))
+    young = extracted_candidate(app, "Young extract", days_ago(13))
+    written = candidate(app, "Agent rule", "Never write to the Brain.", at=days_ago(30))
+    out = app.reviewer.run()
+    assert out["expired"] == 1 and status(app, old) == "deleted"
+    assert status(app, young) == "candidate" and status(app, written) == "candidate" and out["kept"] == 2
+    assert not any("Old extract" in u for u in app.worker.ollama.calls)
+    row = app.store.db.execute("select detail from audit where record_id=? and action='forget'", (old,)).fetchone()
+    assert row["detail"].startswith(f"{review.REVIEW_VERSION} expired: extracted ") and "14 days" in row["detail"]
+
+
+def test_expiry_runs_without_a_live_model(tmp_path):
+    app = app_with(tmp_path, lambda title, user: verdict("keep"), up=False)
+    old = extracted_candidate(app, "Old extract", days_ago(20))
+    out = app.reviewer.run()
+    assert out["error"] == "model server unavailable" and out["expired"] == 1 and status(app, old) == "deleted"
+
+
+def test_candidate_expiry_days_defaults_to_14_and_0_turns_it_off(tmp_path):
+    (tmp_path / "a").mkdir()
+    (tmp_path / "b").mkdir()
+    assert app_with(tmp_path / "a", lambda title, user: verdict("keep")).reviewer.expiry_days == 14
+    app = app_with(tmp_path / "b", lambda title, user: verdict("keep"), up=False, candidate_expiry_days=0)
+    old = extracted_candidate(app, "Old extract", days_ago(200))
+    out = app.reviewer.run()
+    assert out["expired"] == 0 and status(app, old) == "candidate"
+
+
 def test_the_route_needs_the_delete_scope_and_health_carries_the_run(tmp_path):
     app = app_with(tmp_path, lambda title, user: verdict("session-state"), clients=[{"name": "desk", "ip": "127.0.0.1", "scopes": ["read", "write"]}])
     c = candidate(app, "Backup taken", "A backup was taken.", typ="implementation-change")

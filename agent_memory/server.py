@@ -119,7 +119,8 @@ class App:
         self.encoder = embed.encoder_from(options)
         self.memory.encoder = self.encoder
         self.indexer = embed.Indexer(self.store, self.encoder) if self.encoder else None
-        self.reviewer = review.Reviewer(self.store, self.worker, self.memory, self.encoder)
+        expiry = options.get("candidate_expiry_days")
+        self.reviewer = review.Reviewer(self.store, self.worker, self.memory, self.encoder, review.EXPIRY_DAYS if expiry is None else int(expiry))
         self.started = time.time()
         self.requests = 0
         self.denied = 0

@@ -15,6 +15,7 @@ candidates agents had already reviewed: `tools/review-eval/`.
 | a reply that will not parse costs the next model in the chain; a failed candidate is kept | the next run tries it again |
 | one run at a time | a run requested during another waits for it |
 | one worker per live model server, at least two | the candidates are split between desktop and rack: by the Voice Bridge's router, or by `enrich.Pool` when the hosts are asked direct |
+| an extracted candidate pending `candidate_expiry_days` after it was written is forgotten, live model or not | no session promoted it; an agent's candidates never expire (the owner, 2026-10-21) |
 """
 
 from __future__ import annotations
@@ -38,6 +39,7 @@ NEIGHBOURS = 5
 RECORD_CHARS = 600
 REVIEW_TOKENS = 256
 REVIEW_WORKERS = 2
+EXPIRY_DAYS = 14
 VERDICTS = ("duplicate", "session-state", "keep")
 FORGETS = ("duplicate", "session-state")
 LASTING = ("architectural-decision", "constraint", "requirement", "operational-procedure", "preference")
@@ -132,13 +134,31 @@ def neighbours(store, encoder, memory, cand: dict) -> list[dict]:
 
 
 class Reviewer:
-    def __init__(self, store, worker, memory, encoder=None):
+    def __init__(self, store, worker, memory, encoder=None, expiry_days: int = EXPIRY_DAYS):
         self.store = store
         self.worker = worker
         self.memory = memory
         self.encoder = encoder
+        self.expiry_days = expiry_days
         self.lock = threading.Lock()
         self.last: dict | None = None
+
+    def expire(self, limit: int = 500) -> int:
+        """Forget extracted candidates still pending `expiry_days` after they were written; 0 turns it off."""
+        if self.expiry_days <= 0:
+            return 0
+        cutoff = (dt.datetime.now(dt.UTC) - dt.timedelta(days=self.expiry_days)).isoformat(timespec="seconds")
+        n = 0
+        for cand in self.store.pending_candidates(limit):
+            if not (cand.get("created_at") or "") < cutoff:
+                break
+            if not extracted(cand):
+                continue
+            detail = f"{REVIEW_VERSION} expired: extracted {day(cand.get('created_at'))}, not promoted in {self.expiry_days} days"
+            if self.store.forget_candidate(cand["id"], cand["revision"], "review", detail):
+                n += 1
+                LOG.info("review expired %s (%s)", cand["id"][:8], cand["namespace"])
+        return n
 
     def decide(self, cand: dict) -> dict:
         """The model's verdict on one candidate, with the guards applied; nothing is changed."""
@@ -172,6 +192,7 @@ class Reviewer:
                 "at": dt.datetime.now(dt.UTC).isoformat(timespec="seconds"),
                 "version": REVIEW_VERSION,
                 "reviewed": 0,
+                "expired": self.expire(limit),
                 "forgotten": dict.fromkeys(FORGETS, 0),
                 "kept": 0,
                 "failed": 0,

@@ -20,6 +20,9 @@ configuration:
   review_at:
     name: Candidate review time
     description: Local time (HH:MM) of the nightly review, in which the enrichment model forgets candidates that repeat a record their namespace already reaches or report only what one session did. Everything else waits for an agent. Absent means 03:00; off turns it off.
+  candidate_expiry_days:
+    name: Extracted candidate expiry
+    description: Days an extracted candidate may wait for an agent's review. The nightly review forgets one still pending after that, recoverable until retention_deleted_days. Candidates an agent stored never expire. 0 turns it off.
   summary_candidates:
     name: Keep session summaries as candidates
     description: Store each session's closing summary as a candidate for review. Off, a close queues extraction from the session's notes, which hold the summary, and keeps no summary record.

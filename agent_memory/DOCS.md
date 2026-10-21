@@ -34,6 +34,7 @@ A namespace in `hubs` is one whose sessions work on other repositories. Its `mem
 | `anchor_sweep_hours` | 6 | Interval of the entity anchor check, 1 to 168. |
 | `context_budget_tokens` | 4000 | Default `project_context` packet, 500 to 8000. |
 | `hard_context_limit_tokens` | 8000 | No packet exceeds it, 1000 to 16000. |
+| `candidate_expiry_days` | `14` | Days an extracted candidate may wait for an agent's review; the nightly review forgets one still pending after that. Candidates an agent stored never expire. `0` turns it off. |
 | `summary_candidates` | `false` | Keep each session-close summary as a candidate. Off, the close queues extraction from the notes, which hold the summary, and keeps no summary record. |
 | `retention_deleted_days` | 30 | Forgotten records and recorded queries are purged after it, and session-close receipts become tombstones; 1 to 365. |
 | `ollama_url` | absent: no enrichment | Ollama, or an OpenAI-style server when the URL ends in `/v1`. |
@@ -46,4 +47,4 @@ A namespace in `hubs` is one whose sessions work on other repositories. Its `mem
 | `embed_model` | `qwen3-emb-0.6b` | The embedding model's name on that server. |
 | `embed_timeout_s` | 2 | Wait for a query's vector before answering from full-text search, 0.2 to 30. |
 
-`review_at` (local `HH:MM`, absent means 03:00, `off` turns it off) is the nightly candidate review: the enrichment model forgets candidates that repeat a record their namespace already reaches or report only what one session did, and leaves the rest for an agent. `/health` `candidate_review` shows the last run; `POST /api/review` with the `delete` scope runs it now.
+`review_at` (local `HH:MM`, absent means 03:00, `off` turns it off) is the nightly candidate review: the enrichment model forgets candidates that repeat a record their namespace already reaches or report only what one session did, and leaves the rest for an agent. It first forgets extracted candidates older than `candidate_expiry_days`, with or without a live model. `/health` `candidate_review` shows the last run; `POST /api/review` with the `delete` scope runs it now.
