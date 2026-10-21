@@ -2,6 +2,8 @@
 
 Agents call `POST /mcp` on port 8765 with JSON-RPC (MCP streamable HTTP, JSON responses). Start with `memory_bootstrap(namespace)`; the namespace comes from the repository's git remote through `memory_namespace(remote_url)`.
 
+`memory_bootstrap` lists titles under short ids; `memory_get` takes a short id or a full one. `memory_project_context` puts task matches before the standing constraints. `memory_search` takes `min_cosine`, `exclude` and `recall` for a lookup a hook makes from a prompt; hits carry `cosine` when the encoder ranked them. Returns and fetches are counted per record, and the page lists active records nothing returned in 30 days.
+
 | Response | Budget |
 |---|---:|
 | bootstrap | 500 tokens |

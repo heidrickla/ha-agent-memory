@@ -142,3 +142,32 @@ def test_counts_split_status_and_type_and_keep_to_the_window(http):  # noqa: F81
     assert c["searches"]["total"] >= 1
     s, html_page = call(base, "/", headers={"X-Ingress-Path": "/api/hassio_ingress/x"})
     assert s == 200 and "<span>Namespaces</span>" in html_page and NS in html_page
+
+
+def test_the_unused_card_waits_for_its_window_then_lists_records():
+    waiting = {"days": 30, "counting_since": "2026-10-01T12:00:00+00:00", "complete": False, "count": 0, "records": []}
+    out = page.render(data(unused=waiting))
+    assert "<span>Unused records</span>" in out and "the list starts 2026-10-31" in out
+    row = {
+        "id": "aaaaaaaa-0000-4000-8000-000000000001",
+        "namespace": NS,
+        "type": "repository-fact",
+        "title": "<b>Old</b> fact",
+        "created_at": "2026-08-01T00:00:00+00:00",
+        "returned": 0,
+        "fetched": 0,
+        "last_returned_at": None,
+    }
+    out = page.render(data(unused={**waiting, "complete": True, "count": 3, "records": [row]}))
+    assert "3 active record(s) older than 30 days" in out and "aaaaaaaa<" in out and "repository fact" in out
+    assert "2 more not listed." in out and "<b>Old</b>" not in out
+    none = page.render(data(unused={**waiting, "complete": True}))
+    assert "Every active record older than 30 days was returned" in none
+    assert "Unused records" not in page.render(data()), "no card without the data"
+
+
+def test_the_panel_carries_the_unused_list(http):  # noqa: F811
+    base, app = http
+    assert app.panel_data()["unused"]["complete"] is False
+    s, html_page = call(base, "/", headers={"X-Ingress-Path": "/api/hassio_ingress/x"})
+    assert s == 200 and "<span>Unused records</span>" in html_page

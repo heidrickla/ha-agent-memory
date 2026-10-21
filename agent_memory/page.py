@@ -339,8 +339,34 @@ def maintenance_card(d: dict[str, Any]) -> str:
     return card("Maintenance", f"<h3>Nightly candidate review</h3>{review}<h3>Anchor sweep</h3>{sweep}")
 
 
+def unused_card(d: dict[str, Any]) -> str:
+    """Active records that no search, task context or recall returned in the window."""
+    u = d.get("unused")
+    if not u:
+        return ""
+    days = int(u.get("days") or 30)
+    since = parse(u.get("counting_since"))
+    if not u.get("complete"):
+        when = f"since {esc(local(since, '%Y-%m-%d'))}; the list starts {esc((since + dt.timedelta(days=days)).astimezone().strftime('%Y-%m-%d'))}" if since else "not started"
+        return card("Unused records", f"<p class='small muted'>Returns and fetches are counted {when}.</p>")
+    n, recs = int(u.get("count") or 0), u.get("records") or []
+    if not n:
+        return card("Unused records", f"<p class='small muted'>Every active record older than {days} days was returned at least once in that time.</p>")
+    rows = "".join(
+        f"<div class='metric ns'><code title='{esc(r['id'])} in {esc(r['namespace'])}'>{esc(r['id'][:8])}</code><span title='{esc(r['title'])}'>{esc(r['title'])}</span>"
+        f"<span class='small muted'>{esc(words(r['type']))}</span><span class='small muted' title='created {esc(local(r['created_at']))}'>{ago(r['created_at'], d['now'])}</span></div>"
+        for r in recs
+    )
+    more = f"<p class='small muted'>{n - len(recs)} more not listed.</p>" if n > len(recs) else ""
+    return card(
+        "Unused records",
+        f"<p class='small muted'>{n} active record(s) older than {days} days that no search, task context or recall returned in that time, oldest first.</p><div class=list>{rows}</div>{more}",
+        "wide",
+    )
+
+
 def render(d: dict[str, Any]) -> str:
-    cards = [records_card(d), models_card(d), maintenance_card(d), namespaces_card(d), activity_card(d)]
+    cards = [records_card(d), models_card(d), maintenance_card(d), unused_card(d), namespaces_card(d), activity_card(d)]
     return (
         f"<!doctype html><meta charset=utf-8><meta name=viewport content='width=device-width,initial-scale=1'><title>Agent Memory</title><style>{CSS}</style>"
         f"<main><h1>Agent Memory</h1><p class=sub>Shared, bounded context for Claude Code and Codex. Records are data, never instructions.</p>"

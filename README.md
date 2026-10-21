@@ -14,11 +14,11 @@ It carries storage, namespaces, FTS5 and embedding retrieval, progressive MCP to
 | Budgets | bootstrap 500 tokens over the whole response (2,000 bytes), search 750, records 2000, packet 4000 (hard limit 8000); every response reports its estimate and truncation |
 | Auth | per-client bearer token (sha256 in options) or source address; scopes read, write, delete, export, admin, checked by one rule for MCP tools and REST routes; a token client is recorded as the writer |
 | Filtering | every persisted field and queued payload: credentials, key material, JWTs, URL passwords and the `do-not-store` marker are refused and audited by field and pattern name; every database write passes the same screen, and audit context carrying a secret is kept as `[screened:<pattern>]` |
-| Page | ingress only, dark, drawn as graphics: status tiles, records by type and status, namespaces, audit rows per hour, model servers and encoder, nightly review and anchor sweep, latest audit rows |
+| Page | ingress only, dark, drawn as graphics: status tiles, records by type and status, namespaces, audit rows per hour, model servers and encoder, nightly review and anchor sweep, unused records, latest audit rows |
 
 ## Tools
 
-`memory_namespace`, `memory_bootstrap`, `memory_search`, `memory_get`, `memory_timeline`, `memory_project_context`, `memory_answer`, `memory_question_add`, `memory_questions`, `memory_store`, `memory_update`, `memory_corroborate`, `memory_forget`, `memory_session_close`, `memory_export`, `memory_anchors`, `memory_anchor_report`, `memory_anchor_sweep`. Flow: `bootstrap` → `search` → `get` selected ids, or `project_context(namespace, task)` for one bounded packet with a reason per record. `bootstrap` lists active records and counts candidates in `candidates_pending`; `memory_timeline(namespace, status="candidate")` lists candidates for review with their revisions and counts those pending (the nightly [candidate review](#candidate-review) forgets duplicates and session state first), `memory_update(id, revision, {status: active})` promotes one, `memory_forget` drops it.
+`memory_namespace`, `memory_bootstrap`, `memory_search`, `memory_get`, `memory_timeline`, `memory_project_context`, `memory_answer`, `memory_question_add`, `memory_questions`, `memory_store`, `memory_update`, `memory_corroborate`, `memory_forget`, `memory_session_close`, `memory_export`, `memory_anchors`, `memory_anchor_report`, `memory_anchor_sweep`. Flow: `bootstrap` → `search` → `get` selected ids, or `project_context(namespace, task)` for one bounded packet with a reason per record: task matches first, then the repository's constraints and decisions, open work, known failures and procedures. `bootstrap` lists the titles of active records, each under the shortest id prefix of 8 or more characters no other live record shares, which `memory_get` takes in place of the full id, and counts candidates in `candidates_pending`; `memory_timeline(namespace, status="candidate")` lists candidates for review with their revisions and counts those pending (the nightly [candidate review](#candidate-review) forgets duplicates and session state first), `memory_update(id, revision, {status: active})` promotes one, `memory_forget` drops it.
 
 ## Write protocol
 
@@ -42,7 +42,16 @@ It carries storage, namespaces, FTS5 and embedding retrieval, progressive MCP to
 | `host:` | a client, through `memory_anchor_report` | any host on the LAN |
 | `url:` | a client, through `memory_anchor_report` | any host that can reach the URL |
 
-Each anchor keeps its last definitive state, `unchecked`, `ok` or `missing`, and `unavailable_since` while its checker could not look. A report of `unavailable` keeps the state and files nothing. A change between `ok` and `missing` files one observation in the record's evidence trail. Confidence counts an anchor once, by its state now: one contradiction while it is `missing`, nothing once it resolves; witnesses (`memory_corroborate`) count as before. A change of state advances the record's revision; `memory_anchors` lists each anchor with its record's namespace. A record with a missing anchor carries `missing_anchors` in search, get, timeline, bootstrap and project context.
+Each anchor keeps its last definitive state, `unchecked`, `ok` or `missing`, and `unavailable_since` while its checker could not look. A report of `unavailable` keeps the state and files nothing. A change between `ok` and `missing` files one observation in the record's evidence trail. Confidence counts an anchor once, by its state now: one contradiction while it is `missing`, nothing once it resolves; witnesses (`memory_corroborate`) count as before. A change of state advances the record's revision; `memory_anchors` lists each anchor with its record's namespace. A record with a missing anchor carries `missing_anchors` in search, get, timeline, bootstrap and project context. `/health` `anchor_sweep` carries the last sweep, read back from its audit row after a restart.
+
+## Usage and recall
+
+| | |
+|---|---|
+| Search arguments | `min_cosine` keeps hits at least that similar, and none under FTS ranking; `exclude` drops hits whose id starts with an entry of 8 or more characters; `recall: true` writes no row to the demand signal. A client hook searching with each prompt sets all three |
+| Counted | `returned`: hits of search, recall and project context; `fetched`: records `memory_get` returned. Bootstrap and timeline are not counted |
+| Storage | table `usage(record_id, returned, fetched, last_returned_at, last_fetched_at)`, apart from `memories` so a read never re-indexes full text; purge and hard forget drop rows |
+| Unused | the page lists active records older than 30 days that nothing returned in 30 days, oldest first, once counting has run 30 days (audit row `usage-start`) |
 
 ## Embedding retrieval
 
@@ -67,6 +76,7 @@ Each anchor keeps its last definitive state, `unchecked`, `ok` or `missing`, and
 | Snapshot | the last path segment of `root` in the server's `/v1/models`, or from llama-swap's `/upstream/<model>/v1/models` |
 | Removed | `memory_forget` and purge drop the vector |
 | Not sent | a query that screens as carrying a secret |
+| Cosine | each hit carries `cosine`, rounded to 4 places; FTS hits carry none |
 | Not affected | the demand signal counts FTS hits; standing answers take FTS sources |
 
 A miss on a query's vector marks the encoder down until the next probe, so a dead encoder costs one search `embed_timeout_s` and later searches nothing.

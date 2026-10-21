@@ -187,7 +187,7 @@ def test_bootstrap_counts_candidates_instead_of_showing_them(memory, store):
     settled = store.store(rec(type="session-summary", title="Deployed the add-on", content="Version 0.4.2 is running."), "desk")
     pending = store.store(rec(type="session-summary", title="Fix F1 is required before proceeding", content="Stale note.", status="candidate"), "desk")
     boot = memory.bootstrap(NS)
-    shown = [i["id"] for i in boot["items"]]
+    shown = [store.resolve(i["id"]) for i in boot["items"]]
     assert settled["id"] in shown
     assert pending["id"] not in shown
     assert boot["candidates_pending"] == 1
@@ -291,13 +291,13 @@ def test_a_hub_reaches_other_repositories_below_its_own_scopes(store):
     assert [h["id"] for h in plain.search(NS, "installer rebuilt")["hits"]] == [own["id"], shared["id"]]
     assert sibling["id"] in [r["id"] for r in hub.project_context(NS, "installer rebuilt")["records"]]
     assert sibling["id"] not in [r["id"] for r in plain.project_context(NS, "installer rebuilt")["records"]]
-    assert sibling["id"] not in [i["id"] for i in hub.bootstrap(NS)["items"]]
+    assert sibling["id"] not in [store.resolve(i["id"]) for i in hub.bootstrap(NS)["items"]]
     assert [h["id"] for h in hub.search("gitea/example/web-access", "installer rebuilt")["hits"]] == [sibling["id"], shared["id"]], "a namespace not in hubs keeps its scopes"
 
 
 def test_budgets_are_enforced_and_reported(memory, store):
     for i in range(60):
-        store.store(rec(title=f"Fact {i} about the kiosk", content="The office kiosk " * 40 + f"number {i}."), "desk")
+        store.store(rec(title=f"Fact {i} about the kiosk" + " and its display" * 6, content="The office kiosk " * 40 + f"number {i}."), "desk")
     boot = memory.bootstrap(NS)
     assert boot["approx_tokens"] <= 500 and boot["truncated"] is True
     ctx = memory.project_context(NS, "kiosk", budget=1500)
@@ -409,3 +409,95 @@ def test_restart_preserves_writes(tmp_path):
     del app
     again = srv.App(OPTIONS, str(tmp_path))
     assert again.store.stats()["memories"] == 1 and again.memory.search(NS, "restarts")["hits"]
+
+
+# ------------------------------------------------------------------ 0.18.0: short ids, usage, context order, sweep state
+
+
+def test_bootstrap_lists_titles_under_short_ids_that_memory_get_takes(memory, store):
+    ids = [store.store(rec(title=f"Constraint {i}: the office kiosk reloads its dashboard nightly"), "desk")["id"] for i in range(15)]
+    boot = memory.bootstrap(NS)
+    assert all(set(i) == {"id", "type", "title"} and len(i["id"]) == 8 for i in boot["items"]), "titles only, no snippet"
+    assert len(boot["items"]) == 12, "every constraint the bootstrap reads fits as a title"
+    got = memory.get([i["id"] for i in boot["items"][:3]])
+    assert [r["id"] for r in got["records"]] == [store.resolve(i["id"]) for i in boot["items"][:3]] and got["missing"] == []
+    assert set(r["id"] for r in got["records"]) <= set(ids)
+
+
+def test_a_short_id_grows_until_no_other_live_record_shares_it(memory, store):
+    a = store.store(rec(id="aaaaaaaa-0000-4000-8000-000000000001"), "desk")["id"]
+    b = store.store(rec(id="aaaaaaaa-0000-4000-8000-000000000002", title="Another"), "desk")["id"]
+    c = store.store(rec(id="bbbbbbbb-1111-4000-8000-000000000001", title="Third"), "desk")["id"]
+    assert store.short_id(c) == "bbbbbbbb"
+    assert store.short_id(a) == a and store.short_id(b) == b, "the ids differ only in their last character"
+    assert store.resolve("aaaaaaaa") is None, "an ambiguous prefix names nothing"
+    assert store.resolve("bbbbbbbb") == c and store.resolve(c) == c
+    assert store.resolve("bbbbbbb") is None, "under 8 characters is no short id"
+    assert store.resolve("bbbbbbbb%") is None and store.resolve("bbbb_bbb") is None, "no pattern characters"
+    store.forget(b, "desk")
+    assert store.resolve("aaaaaaaa") == a and store.short_id(a) == "aaaaaaaa", "a forgotten record no longer competes"
+    got = memory.get(["aaaaaaaa", "cccccccc", c])
+    assert [r["id"] for r in got["records"]] == [a, c] and got["missing"] == ["cccccccc"]
+
+
+def test_returns_and_fetches_are_counted_and_bootstrap_is_not(memory, store):
+    rid = store.store(rec(), "desk")["id"]
+    memory.bootstrap(NS)
+    assert store.usage(rid)["returned"] == 0
+    memory.search(NS, "restarts")
+    memory.project_context(NS, "restarts")
+    u = store.usage(rid)
+    assert u["returned"] == 2 and u["fetched"] == 0 and u["last_returned_at"]
+    memory.get([rid, rid[:8]])
+    assert store.usage(rid)["fetched"] == 1, "one read of one record counts once"
+    memory.timeline(NS)
+    assert store.usage(rid)["returned"] == 2, "the review list is not a return"
+
+
+def test_usage_rows_leave_with_their_records(store):
+    gone = store.store(rec(), "desk")["id"]
+    kept = store.store(rec(title="Kept"), "desk")["id"]
+    store.note_use([gone, kept], "returned")
+    store.forget(gone, "desk", hard=True)
+    assert store.db.execute("select record_id from usage").fetchall()[0]["record_id"] == kept
+    soft = store.store(rec(title="Soft"), "desk")["id"]
+    store.note_use([soft], "fetched")
+    store.forget(soft, "desk")
+    store.db.execute("update memories set deleted_at='2000-01-01T00:00:00+00:00' where id=?", (soft,))
+    store.purge(30)
+    assert [r["record_id"] for r in store.db.execute("select record_id from usage").fetchall()] == [kept]
+
+
+def test_unused_waits_for_a_full_window_then_lists_what_nothing_returned(memory, store):
+    old = "2026-01-01T00:00:00+00:00"
+    quiet = store.store(rec(title="Quiet"), "desk")["id"]
+    asked = store.store(rec(title="Asked about restarts"), "desk")["id"]
+    fresh = store.store(rec(title="Fresh"), "desk")["id"]
+    for rid in (quiet, asked):
+        store.db.execute("update memories set created_at=? where id=?", (old, rid))
+    first = store.unused()
+    assert first["complete"] is False and first["counting_since"], "counting began with this database"
+    store.db.execute("update audit set at=? where action='usage-start'", (old,))
+    store.note_use([asked], "returned")
+    out = store.unused()
+    assert out["complete"] is True and out["count"] == 1 and [r["id"] for r in out["records"]] == [quiet]
+    assert fresh not in [r["id"] for r in out["records"]], "a record younger than the window is not unused"
+    store.db.execute("update usage set last_returned_at=? where record_id=?", (old, asked))
+    assert {r["id"] for r in store.unused()["records"]} == {quiet, asked}, "a return older than the window does not count"
+
+
+def test_project_context_puts_task_matches_before_the_standing_constraints(memory, store):
+    store.store(rec(title="Restarts are pre-authorized", content="Restarts never need permission. " * 30), "desk")
+    match = store.store(rec(type="repository-fact", title="Kiosk dashboard", content="The kiosk dashboard reloads nightly."), "desk")["id"]
+    ctx = memory.project_context(NS, "kiosk dashboard", budget=120)
+    assert [r["id"] for r in ctx["records"]] == [match] and ctx["truncated"], "a tight budget keeps the task match"
+    assert ctx["records"][0]["why"] == "matches the task"
+
+
+def test_the_last_anchor_sweep_survives_a_restart(store):
+    first = mcp.Memory(store, OPTIONS)
+    result = first.anchor_sweep("sweep")
+    later = mcp.Memory(store, OPTIONS).sweep_state()
+    assert {k: v for k, v in later.items() if k != "at"} == result and later["at"][:15] == first.last_sweep["at"][:15]
+    assert mcp.Memory(Store(store.path), OPTIONS).sweep_state()["at"], "a new process reads it back"
+    assert mcp.Memory(Store(store.path + "-empty"), OPTIONS).sweep_state() == {"at": None}

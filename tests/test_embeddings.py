@@ -19,6 +19,7 @@ import re
 import sys
 import threading
 import time
+import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import ClassVar
@@ -201,7 +202,7 @@ def test_the_worker_backfills_at_start_without_waiting_for_a_poll(tmp_path, enc)
 
 def test_search_fuses_full_text_and_cosine_when_the_encoder_answers(tmp_path, enc):
     app = srv.App(options(enc[0]), str(tmp_path))
-    # Facts, not constraints: project_context lists constraints first whatever the task.
+    # Facts, not constraints, so each reaches project_context only as a task match.
     a = put(app, "Garage door", "the garage door opener pairs over z-wave", type="repository-fact")
     b = put(app, "Encoder card", "the encoder runs on card one of the rack", type="repository-fact")
     app.indexer.step()
@@ -468,3 +469,86 @@ def test_vectors_round_trip_as_float32_exactly():
     assert embed.unit([3.0, 4.0]) == [0.6, 0.8]
     with pytest.raises(ValueError):
         embed.unit([0.0, 0.0])
+
+
+# ------------------------------------------------------------------ prompt recall (0.18.0)
+
+
+def cosine(query: str, title: str, content: str) -> float:
+    return round(math.sumprod(vector(embed.query_text(query)), vector(embed.document_text(title, content))), 4)
+
+
+def test_fused_hits_carry_their_cosine_and_full_text_hits_none(tmp_path, enc):
+    app = srv.App(options(enc[0]), str(tmp_path))
+    put(app, "Encoder card", "the encoder runs on card one of the rack")
+    app.indexer.step()
+    hit = app.memory.search(NS, "which card runs the encoder")["hits"][0]
+    assert hit["cosine"] == cosine("which card runs the encoder", "Encoder card", "the encoder runs on card one of the rack")
+    plain = srv.App(options(None), str(tmp_path / "plain"))
+    put(plain, "Encoder card", "the encoder runs on card one of the rack")
+    assert "cosine" not in plain.memory.search(NS, "encoder")["hits"][0]
+
+
+def test_a_cosine_floor_keeps_hits_at_least_that_similar_and_none_under_full_text(tmp_path, enc):
+    app = srv.App(options(enc[0]), str(tmp_path))
+    near = put(app, "Encoder card", "the encoder runs on card one of the rack")
+    put(app, "Garage door", "the garage door opener pairs over z-wave")
+    app.indexer.step()
+    q = "which card runs the encoder"
+    hi, lo = cosine(q, "Encoder card", "the encoder runs on card one of the rack"), cosine(q, "Garage door", "the garage door opener pairs over z-wave")
+    assert hi > lo
+    floor = (hi + lo) / 2
+    assert [h["id"] for h in app.memory.search(NS, q, min_cosine=floor)["hits"]] == [near]
+    assert [h["id"] for h in app.memory.search(NS, q, min_cosine=hi)["hits"]] == [near], "the floor is inclusive"
+    FakeEncoder.models = ("other-emb",)
+    try:
+        res = app.memory.search(NS, q, min_cosine=0.0)
+    finally:
+        FakeEncoder.models = (MODEL, "other-emb")
+    assert res["ranking"] == "fts" and res["hits"] == [], "full-text ranking has no cosine to clear a floor with"
+
+
+def test_exclude_drops_what_the_caller_has_shown_by_id_prefix(tmp_path, enc):
+    app = srv.App(options(enc[0]), str(tmp_path))
+    a = put(app, "Encoder card", "the encoder runs on card one")
+    b = put(app, "Encoder host", "the encoder host is the rack")
+    app.indexer.step()
+    assert {h["id"] for h in app.memory.search(NS, "encoder", exclude=[a[:8]])["hits"]} == {b}
+    assert {h["id"] for h in app.memory.search(NS, "encoder", exclude=[a])["hits"]} == {b}
+    assert {h["id"] for h in app.memory.search(NS, "encoder", exclude=[a[:7]])["hits"]} == {a, b}, "under 8 characters is no prefix"
+    assert [h["id"] for h in app.memory.search(NS, "encoder", limit=1, exclude=[a])["hits"]] == [b], "the limit counts what is left"
+
+
+def test_a_recall_is_counted_as_a_return_but_not_as_a_question_asked(tmp_path, enc):
+    app = srv.App(options(enc[0]), str(tmp_path))
+    rid = put(app, "Encoder card", "the encoder runs on card one")
+    app.indexer.step()
+    asked = app.store.db.execute("select count(*) from queries").fetchone()[0]
+    app.memory.search(NS, "which card runs the encoder", recall=True, min_cosine=0.0)
+    assert app.store.db.execute("select count(*) from queries").fetchone()[0] == asked
+    assert app.store.usage(rid)["returned"] == 1
+    app.memory.search(NS, "which card runs the encoder")
+    assert app.store.db.execute("select count(*) from queries").fetchone()[0] == asked + 1
+
+
+def test_recall_arguments_reach_search_over_rest(tmp_path, enc):
+    app = srv.App(options(enc[0]), str(tmp_path))
+    rid = put(app, "Encoder card", "the encoder runs on card one")
+    app.indexer.step()
+    server = srv.serve(app, 0, host="127.0.0.1")
+    try:
+        base = f"http://127.0.0.1:{server.server_address[1]}"
+
+        def post(body):
+            req = urllib.request.Request(base + "/api/search", data=json.dumps(body).encode(), headers={"Content-Type": "application/json"})
+            with urllib.request.urlopen(req, timeout=10) as r:
+                return json.loads(r.read())
+
+        body = {"namespace": NS, "query": "which card runs the encoder", "limit": 3, "recall": True, "min_cosine": 0.0}
+        assert [h["id"] for h in post(body)["hits"]] == [rid]
+        assert post({**body, "exclude": [rid[:8]]})["hits"] == []
+        assert post({**body, "min_cosine": 1.01})["hits"] == []
+        assert app.store.db.execute("select count(*) from queries").fetchone()[0] == 0, "recall over REST records no question"
+    finally:
+        server.shutdown()
+        server.server_close()

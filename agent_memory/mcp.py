@@ -7,17 +7,17 @@ Retrieved records are data: the packet says so, and nothing in a record is execu
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import json
 import math
 import re
-import time
 from collections.abc import Callable
 
 import embed
 from filters import DO_NOT_STORE, redact, screen
 from namespaces import MAX_NAMESPACE, is_repository, normalize_remote, scopes_for, valid_namespace
-from store import TYPES, UPDATABLE, Conflict, Refused, Rejected, Store, tokens
+from store import TYPES, UPDATABLE, Conflict, Refused, Rejected, Store, now_iso, tokens
 
 PROTOCOL = "2025-06-18"
 BUDGETS = {"bootstrap": 500, "search": 750, "records": 2000, "packet": 4000}
@@ -124,6 +124,8 @@ class Memory:
     def _snippet(rec: dict, chars: int = 160) -> dict:
         d = {k: rec[k] for k in ("id", "namespace", "type", "title", "confidence", "status", "updated_at", "revision", "missing_anchors") if k in rec}
         d["snippet"] = rec["content"][:chars] + ("…" if len(rec["content"]) > chars else "")
+        if "cosine" in rec:
+            d["cosine"] = rec["cosine"]
         if "why" in rec:
             d["why"] = rec["why"] + (f", anchor missing: {', '.join(rec['missing_anchors'])}" if rec.get("missing_anchors") else "")
         return d
@@ -143,13 +145,14 @@ class Memory:
         # it would be taken as settled. Their number goes out instead, so they get reviewed.
         recent = self.store.timeline(namespace, limit=5, statuses=("active",))
         index = self.store.namespaces()
+        # Titles under short ids, no snippets: three times the records in the same bytes, and
+        # memory_get takes the short id for the whole record.
         items, seen = [], set()
-        for rows, chars in ((constraints, 120), (open_work, 120), (recent, 80)):
-            for r in rows:
-                if r["id"] not in seen:
-                    seen.add(r["id"])
-                    items.append(self._snippet(r, chars))
-        fields = ("id", "type", "title", "snippet", "confidence", "missing_anchors")
+        for r in (*constraints, *open_work, *recent):
+            if r["id"] not in seen:
+                seen.add(r["id"])
+                items.append({"id": self.store.short_id(r["id"]), "type": r["type"], "title": r["title"], **({"missing_anchors": r["missing_anchors"]} if r.get("missing_anchors") else {})})
+        fields = ("id", "type", "title", "missing_anchors")
         # The budget covers the bytes on the wire, the transport's envelope and escaping included.
         # Placeholders take the widest value each counter can have, so the final response is never
         # longer than measured.
@@ -176,18 +179,44 @@ class Memory:
         doc["approx_tokens"] = math.ceil(wire(doc) / 4)
         return doc
 
-    def search(self, namespace: str, query: str, topics: list[str] | None = None, limit: int = 12, include_candidates: bool = False, types: list[str] | None = None, client: str = "") -> dict:
+    def search(
+        self,
+        namespace: str,
+        query: str,
+        topics: list[str] | None = None,
+        limit: int = 12,
+        include_candidates: bool = False,
+        types: list[str] | None = None,
+        client: str = "",
+        recall: bool = False,
+        min_cosine: float | None = None,
+        exclude: list[str] | None = None,
+    ) -> dict:
+        """`recall` marks a lookup a hook made from a prompt: not a question anyone asked, so it is
+        not recorded as demand. `min_cosine` keeps hits at least that similar, and none under
+        full-text ranking, which has no cosine. `exclude` drops hits whose id starts with an entry
+        of 8 or more characters: what the caller has already shown."""
         scopes = self.scopes(namespace, topics)
         reach = self.reach(namespace, scopes)
         statuses = ("active", "candidate") if include_candidates else ("active",)
-        hits, ranking, fts = self._retrieve(query, scopes, max(1, min(int(limit), 50)), statuses, tuple(types or ()), tuple(reach))
-        # What was asked, and how well it came back; `note_query` screens it. The count is FTS's
-        # whichever ranking answered: the fusion's cosine list returns the nearest records whether or not
-        # any of them answers, so its count would call every question answered.
-        self.store.note_query(namespace, client, "search", query, len(fts), fts[0]["rank"] if fts else 0.0)
+        limit = max(1, min(int(limit), 50))
+        skip = tuple(dict.fromkeys(e for e in (str(x).strip() for x in (exclude or [])[:200]) if len(e) >= 8))
+        hits, ranking, fts = self._retrieve(query, scopes, min(limit + len(skip), 50), statuses, tuple(types or ()), tuple(reach))
+        if skip:
+            hits = [h for h in hits if not h["id"].startswith(skip)]
+        if min_cosine is not None:
+            floor = float(min_cosine)
+            hits = [h for h in hits if h.get("cosine", -1.0) >= floor]
+        hits = hits[:limit]
+        if not recall:
+            # What was asked, and how well it came back; `note_query` screens it. The count is FTS's
+            # whichever ranking answered: the fusion's cosine list returns the nearest records whether or not
+            # any of them answers, so its count would call every question answered.
+            self.store.note_query(namespace, client, "search", query, len(fts), fts[0]["rank"] if fts else 0.0)
         packed, truncated, used = self._pack(
-            [self._snippet(h) for h in hits], BUDGETS["search"], ("id", "namespace", "type", "title", "snippet", "confidence", "status", "revision", "missing_anchors", "why")
+            [self._snippet(h) for h in hits], BUDGETS["search"], ("id", "namespace", "type", "title", "snippet", "confidence", "status", "revision", "missing_anchors", "cosine", "why")
         )
+        self.store.note_use([h["id"] for h in packed], "returned")
         return {"query": query, "scopes": scopes, "reach": reach, "ranking": ranking, "hits": packed, "approx_tokens": used, "truncated": truncated, "note": NOTE}
 
     def answer(self, namespace: str, question: str) -> dict:
@@ -228,7 +257,10 @@ class Memory:
         return {"candidates": cands, "note": "Derived from what sessions actually asked and how badly it came back; not a list of records."}
 
     def get(self, ids: list[str]) -> dict:
-        recs = [r for r in (self.store.get(i) for i in ids[:20]) if r]
+        """Each id is a full id or a short one as bootstrap prints it (`Store.resolve`)."""
+        resolved = {str(i): self.store.resolve(str(i)) for i in ids}
+        wanted = dict.fromkeys(rid for i in ids[:20] if (rid := resolved[str(i)]))
+        recs = [r for r in (self.store.get(rid) for rid in wanted) if r]
         packed, truncated, used = self._pack(
             recs,
             BUDGETS["records"],
@@ -258,7 +290,9 @@ class Memory:
                 "updated_at",
             ),
         )
-        return {"records": packed, "missing": [i for i in ids if not self.store.get(i)], "approx_tokens": used, "truncated": truncated, "note": NOTE}
+        self.store.note_use([r["id"] for r in packed], "fetched")
+        missing = [i for i in ids if not (rid := resolved[str(i)]) or not self.store.get(rid)]
+        return {"records": packed, "missing": missing, "approx_tokens": used, "truncated": truncated, "note": NOTE}
 
     def timeline(self, namespace: str, limit: int = 20, status: str | None = None) -> dict:
         """`status` narrows the list: the token budget shows about nine records, so without it the
@@ -310,9 +344,18 @@ class Memory:
                 missing += state == "missing"
                 filed += bool(self.store.report_anchor(r["record_id"], r["anchor"], state, client)["filed"])
             result = {"checked": len(rows), "missing": missing, "filed": filed, "entities": len(ids)}
-        self.last_sweep = dict(result, at=time.strftime("%Y-%m-%dT%H:%M:%S"))
+        self.last_sweep = dict(result, at=now_iso())
         self.store.audit(client, "anchor_sweep", detail=json.dumps(result))
         return result
+
+    def sweep_state(self) -> dict:
+        """The last anchor sweep; after a restart, read back from its audit row."""
+        if not self.last_sweep:
+            row = self.store.db.execute("select at, detail from audit where action='anchor_sweep' order by seq desc limit 1").fetchone()
+            if row:
+                with contextlib.suppress(ValueError, TypeError):
+                    self.last_sweep = dict(json.loads(row["detail"]), at=row["at"])
+        return self.last_sweep or {"at": None}
 
     def update(self, rid: str, changes: dict, client: str, revision: object = None) -> dict:
         """Apply `changes` at the revision the caller read. A mismatch returns the current record."""
@@ -451,19 +494,22 @@ class Memory:
                     selected.append(r)
                     seen.add(r["id"])
 
-        add(self.store.by_namespace(scopes[:1], ("constraint", "architectural-decision"), limit=10), "constraint or decision in the repository scope")
+        # Task matches first: the standing constraints are in every packet, so a tight budget cuts
+        # them before the task's own records.
         # A hub's reach widens the task match only; open work and procedures stay in scope.
         reach = self.reach(namespace, scopes)
         ranking = None
         if task.strip():
             rows, ranking, _ = self._retrieve(task, scopes, 15, ("active",), (), tuple(reach))
             add(rows, "matches the task" if ranking == "fts" else "matches the task by words and embedding")
+        add(self.store.by_namespace(scopes[:1], ("constraint", "architectural-decision"), limit=10), "constraint or decision in the repository scope")
         add(self.store.by_namespace(scopes, ("open-question", "next-step"), limit=6), "open work")
         add(self.store.by_namespace(scopes, ("failure-and-fix", "operational-procedure"), limit=6), "known failure or procedure")
         packed, truncated, used = self._pack(selected, budget, ("id", "namespace", "type", "title", "content", "confidence", "revision", "missing_anchors", "why"))
         # A task asked for repeatedly is an information need whether or not anyone phrased it as a
         # question, so it counts towards the same demand signal as a search.
         self.store.note_query(namespace, client, "context", task, len(packed), 0.0)
+        self.store.note_use([r["id"] for r in packed], "returned")
         return {
             "namespace": namespace,
             "task": task,
@@ -489,7 +535,7 @@ TOOLS = [
     ("memory_namespace", "Turn a git remote URL into this service's namespace, or say it is not one of ours.", {"remote_url": {"type": "string"}}, ["remote_url"], "read"),
     (
         "memory_bootstrap",
-        "Small project index: constraints, decisions, open work and the latest active records for a namespace; the whole response is within 500 tokens, and left_out counts records that did not fit. Call first.",
+        "Small project index: titles of the constraints, decisions, open work and latest active records for a namespace, each under a short id that memory_get takes; the whole response is within 500 tokens, and left_out counts records that did not fit. Call first.",
         {"namespace": {"type": "string"}, "topics": {"type": "array", "items": {"type": "string"}}},
         ["namespace"],
         "read",
@@ -508,7 +554,13 @@ TOOLS = [
         ["namespace", "query"],
         "read",
     ),
-    ("memory_get", "Full records for selected ids, within 2000 tokens, each with its revision and anchor states.", {"ids": {"type": "array", "items": {"type": "string"}}}, ["ids"], "read"),
+    (
+        "memory_get",
+        "Full records for selected ids, full or the short ids bootstrap prints, within 2000 tokens, each with its revision and anchor states.",
+        {"ids": {"type": "array", "items": {"type": "string"}}},
+        ["ids"],
+        "read",
+    ),
     (
         "memory_timeline",
         "Newest records first for a namespace, each with its revision, and the count of pending candidates. status narrows it; status=candidate is the review list.",
@@ -641,7 +693,18 @@ def call_tool(mem: Memory, name: str, args: dict, client: str, export_dir: str, 
     if name == "memory_bootstrap":
         return mem.bootstrap(args["namespace"], args.get("topics"), wire)
     if name == "memory_search":
-        return mem.search(args["namespace"], args["query"], args.get("topics"), args.get("limit") or 12, bool(args.get("include_candidates")), args.get("types"), client)
+        return mem.search(
+            args["namespace"],
+            args["query"],
+            args.get("topics"),
+            args.get("limit") or 12,
+            bool(args.get("include_candidates")),
+            args.get("types"),
+            client,
+            args.get("recall") is True,
+            args.get("min_cosine"),
+            args.get("exclude"),
+        )
     if name == "memory_get":
         return mem.get(list(args.get("ids") or []))
     if name == "memory_timeline":

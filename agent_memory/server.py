@@ -141,7 +141,7 @@ class App:
             "enrichment": enrichment,
             # Not part of `status`: search answers from FTS whenever the encoder does not.
             "embeddings": self.indexer.state() if self.indexer else {"encoder": "off"},
-            "anchor_sweep": self.memory.last_sweep or {"at": None},
+            "anchor_sweep": self.memory.sweep_state(),
             "candidate_review": {**self.reviewer.state(), "review_at": review_at(self.options)},
             "requests": self.requests,
             "denied": self.denied,
@@ -155,7 +155,7 @@ class App:
     def panel_data(self) -> dict:
         now = dt.datetime.now(dt.UTC)
         since = (now - dt.timedelta(hours=24)).isoformat(timespec="seconds")
-        return {"now": now, "health": self.health(), "counts": self.store.panel_counts(since), "audit": self.audit_tail()}
+        return {"now": now, "health": self.health(), "counts": self.store.panel_counts(since), "audit": self.audit_tail(), "unused": self.store.unused()}
 
 
 def make_handler(app: App):
@@ -235,7 +235,7 @@ def make_handler(app: App):
                 if path == "/api/bootstrap":
                     self._json(200, app.memory.bootstrap(one["namespace"], one.get("topics", "").split(",") if one.get("topics") else None))
                 elif path == "/api/search":
-                    self._json(200, app.memory.search(one["namespace"], one.get("query", ""), None, int(one.get("limit", 12)), one.get("include_candidates") == "true"))
+                    self._json(200, app.memory.search(one["namespace"], one.get("query", ""), None, int(one.get("limit", 12)), one.get("include_candidates") == "true", client=name))
                 elif path == "/api/get":
                     self._json(200, app.memory.get(one.get("ids", "").split(",")))
                 elif path == "/api/timeline":

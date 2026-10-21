@@ -140,7 +140,7 @@ def test_a_session_summary_is_a_candidate_kept_out_of_bootstrap_search_and_answe
     summary = store.get(closed["stored"])
     assert summary["status"] == "candidate" and closed["status"] == "candidate"
     boot = memory.bootstrap(NS)
-    assert summary["id"] not in [i["id"] for i in boot["items"]] and boot["candidates_pending"] == 1
+    assert summary["id"] not in [store.resolve(i["id"]) for i in boot["items"]] and boot["candidates_pending"] == 1
     assert memory.search(NS, "Prod-5 HA VM")["hits"] == []
     assert store.sources_for(NS, "which host carries the HA VM") == [], "a standing answer is not written from an unreviewed summary"
     assert [h["id"] for h in memory.search(NS, "Prod-5 HA VM", include_candidates=True)["hits"]] == [summary["id"]]
@@ -154,7 +154,7 @@ def test_bootstrap_never_admits_an_item_that_does_not_fit_the_first_included(mem
     huge = store.store(rec(title="T" * 3000, content="An oversized constraint."), "desk")
     store.store(rec(type="next-step", title="Small next step", content="Fits easily."), "desk")
     boot = memory.bootstrap(NS)
-    assert huge["id"] not in [i["id"] for i in boot["items"]]
+    assert huge["id"] not in [store.resolve(i["id"]) for i in boot["items"]]
     assert [i["title"] for i in boot["items"]] == ["Small next step"]
     assert boot["left_out"] == 1 and boot["truncated"] is True
     assert len(json.dumps(boot, ensure_ascii=False).encode("utf-8")) <= 2000 and boot["approx_tokens"] <= 500

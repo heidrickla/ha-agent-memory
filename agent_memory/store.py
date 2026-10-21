@@ -58,6 +58,10 @@ UPDATE_TRANSITIONS = {("candidate", "active"), ("active", "candidate")}
 UPDATABLE = ("title", "content", "type", "confidence", "status", "topics", "project_scopes", "expires_at", "sensitivity", "anchors")
 ANCHOR_STATES = ("ok", "missing", "unavailable")
 ANCHOR_QUOTE = re.compile(r"anchor (.+) (?:no longer resolves|resolves again)")
+# A record id as uuid4 writes it, or a prefix of one: what `resolve` takes in place of a full id.
+SHORT_REF = re.compile(r"^[0-9a-f][0-9a-f-]{7,35}$")
+SHORT_WIDTH = 8
+USE_KINDS = ("returned", "fetched")
 SCHEMA = """
 create table if not exists memories (
   id text primary key, created_at text not null, updated_at text not null,
@@ -111,6 +115,10 @@ create unique index if not exists questions_key on questions(namespace, norm);
 create table if not exists embeddings (
   record_id text primary key, digest text not null, model text not null, vector blob not null
 );
+create table if not exists usage (
+  record_id text primary key, returned integer not null default 0, fetched integer not null default 0,
+  last_returned_at text, last_fetched_at text
+);
 """
 """`revision` counts mutations of a record: content, anchors, evidence, status, supersession. `memory_update`
 applies only at the revision the caller read, because `updated_at` has one-second resolution.
@@ -122,6 +130,10 @@ dropped and the row stays as a tombstone (`expired_at`), so an id is never execu
 
 `anchors.last_state` is the last definitive check (`ok` or `missing`, empty when never checked);
 `unavailable_since` is set while the checker could not look and cleared by the next definitive check.
+"""
+"""`usage` counts how often a record was returned by a search, a task context or a prompt recall, and
+how often it was fetched whole. It is its own table so a read never touches `memories`, whose update
+trigger re-indexes the full text. Bootstrap does not count: every session start returns it unasked.
 """
 """`embeddings` holds one float32 vector per record for embedding retrieval (`embed.py`).
 
@@ -426,6 +438,9 @@ class Store:
                 self.db.execute(f"alter table {table} add column {column} {decl}")
                 if table == "evidence":
                     self._mark_anchor_evidence()
+        # When usage counting began: before that, "not returned in 30 days" would mean "not counted yet".
+        if not self.db.execute("select 1 from audit where action='usage-start' limit 1").fetchone():
+            self.audit("system", "usage-start")
 
     def _mark_anchor_evidence(self) -> None:
         """Rows `report_anchor` filed before evidence carried its anchor, known by the quote it writes."""
@@ -801,6 +816,8 @@ class Store:
                 cur = self.db.execute("update memories set deleted_at=?, status='deleted', revision=revision+1 where id=? and deleted_at is null", (now_iso(), rid))
             if cur.rowcount:
                 self.db.execute("delete from embeddings where record_id=?", (rid,))
+                if hard:
+                    self.db.execute("delete from usage where record_id=?", (rid,))
                 self.audit(client, "forget_hard" if hard else "forget", record_id=rid)
         return bool(cur.rowcount)
 
@@ -828,6 +845,7 @@ class Store:
             cur = self.db.execute("delete from memories where deleted_at is not null and deleted_at < ?", (cutoff,))
             # A vector outlives nothing it was made from: purged, forgotten or never-live records lose theirs.
             self.db.execute("delete from embeddings where record_id not in (select id from memories where deleted_at is null)")
+            self.db.execute("delete from usage where record_id not in (select id from memories)")
             # Queries age out on the same clock. They are a demand signal, not a record.
             self.db.execute("delete from queries where at < ?", (cutoff,))
             # A receipt past the retention keeps its id, client and digest as a tombstone: a replay after
@@ -999,6 +1017,65 @@ class Store:
             if not r or (r["deleted_at"] and not include_deleted):
                 return None
             return self._row(r)
+
+    def resolve(self, ref: str) -> str | None:
+        """The id of the record `ref` names: its full id, or a prefix of at least 8 characters that
+        exactly one live record has, as bootstrap prints them. None when unknown or ambiguous."""
+        ref = str(ref).strip()
+        with self.lock:
+            if self.db.execute("select 1 from memories where id=?", (ref,)).fetchone():
+                return ref
+            if not SHORT_REF.fullmatch(ref):
+                return None
+            rows = self.db.execute("select id from memories where substr(id, 1, ?)=? and deleted_at is null limit 2", (len(ref), ref)).fetchall()
+        return rows[0]["id"] if len(rows) == 1 else None
+
+    def short_id(self, rid: str) -> str:
+        """The shortest prefix of `rid`, from 8 characters, that no other live record shares; the
+        whole id when it is not one `resolve` takes a prefix of."""
+        if not SHORT_REF.fullmatch(rid):
+            return rid
+        with self.lock:
+            for width in range(SHORT_WIDTH, len(rid)):
+                if self.db.execute("select count(*) from memories where substr(id, 1, ?)=? and deleted_at is null", (width, rid[:width])).fetchone()[0] <= 1:
+                    return rid[:width]
+        return rid
+
+    def note_use(self, ids: list[str], kind: str) -> None:
+        """Count each record once per read as `returned` (a search, task context or recall hit) or
+        `fetched` (read whole). Never raises: counting must not fail the read it counts."""
+        if kind not in USE_KINDS or not ids:
+            return
+        at = now_iso()
+        try:
+            with self.transaction():
+                for rid in dict.fromkeys(ids):
+                    self.db.execute(
+                        f"insert into usage(record_id, {kind}, last_{kind}_at) values (?, 1, ?) on conflict(record_id) do update set {kind}={kind}+1, last_{kind}_at=excluded.last_{kind}_at",
+                        (rid, at),
+                    )
+        except (sqlite3.Error, Rejected):
+            pass
+
+    def unused(self, days: int = 30, limit: int = 20) -> dict:
+        """Active records created more than `days` ago that nothing returned in that time, oldest
+        first. `complete` is False until counting has run for `days`: before that the list would
+        name records that were not counted, not records nobody asked for."""
+        cutoff = (dt.datetime.now(dt.UTC) - dt.timedelta(days=days)).isoformat(timespec="seconds")
+        started = self.db.execute("select min(at) from audit where action='usage-start'").fetchone()[0]
+        where = "m.status='active' and m.deleted_at is null and m.created_at < ? and (u.last_returned_at is null or u.last_returned_at < ?)"
+        with self.lock:
+            n = self.db.execute(f"select count(*) from memories m left join usage u on u.record_id = m.id where {where}", (cutoff, cutoff)).fetchone()[0]
+            rows = self.db.execute(
+                f"select m.id, m.namespace, m.type, m.title, m.created_at, coalesce(u.returned, 0) as returned, coalesce(u.fetched, 0) as fetched, u.last_returned_at "
+                f"from memories m left join usage u on u.record_id = m.id where {where} order by m.created_at, m.id limit ?",
+                (cutoff, cutoff, limit),
+            ).fetchall()
+        return {"days": days, "counting_since": started, "complete": bool(started) and started <= cutoff, "count": n, "records": [dict(r) for r in rows]}
+
+    def usage(self, rid: str) -> dict:
+        r = self.db.execute("select returned, fetched, last_returned_at, last_fetched_at from usage where record_id=?", (rid,)).fetchone()
+        return dict(r) if r else {"returned": 0, "fetched": 0, "last_returned_at": None, "last_fetched_at": None}
 
     def _live(self, statuses: tuple[str, ...]) -> str:
         marks = ",".join("?" for _ in statuses)

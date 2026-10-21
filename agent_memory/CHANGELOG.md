@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.18.0
+
+- `memory_bootstrap` lists titles under short ids, without snippets: about three times the records in the same 500 tokens. `memory_get` takes the short id, the shortest prefix of 8 or more characters no other live record shares.
+- `memory_project_context` puts task matches first, then the repository's constraints and decisions, open work and known failures, so a tight budget cuts the standing records.
+- `memory_search` hits carry `cosine` under fused ranking. `min_cosine` keeps hits at least that similar, `exclude` drops hits by id prefix, and `recall` writes no demand-signal row: a hook can search with each prompt and add only what is close and not yet shown. REST `GET /api/search` records the calling client.
+- Usage counters: how often each record is returned (search, recall, project context) and fetched (`memory_get`), in table `usage`. The page lists active records older than 30 days that nothing returned in 30 days, once counting has run that long.
+- `/health` `anchor_sweep` is read back from the audit after a restart, and its time is UTC.
+
 ## 0.17.1
 
 - `candidate_expiry_days` (default 14, `0` off): the nightly review first forgets an extracted candidate no session has promoted that long after it was written, recoverable until `retention_deleted_days`. Candidates an agent stored never expire. It runs whether or not a model is live; `/health` `candidate_review.expired` counts them. Of 24 extracted candidates agents reviewed on 2026-10-21, none was promoted.

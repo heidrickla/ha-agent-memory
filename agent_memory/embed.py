@@ -227,6 +227,7 @@ def fuse(store, fts: list[dict], qvec: list[float], vectors: dict, scopes: list[
         where = f"scope #{scopes.index(d['namespace']) + 1}" if d["namespace"] in scopes else "reach"
         ranks = ", ".join(f"{name} #{n}" for name, n in place[rid].items())
         d["rank"] = round(score[rid], 5)
+        d["cosine"] = round(cos.get(rid, 0.0), 4)
         d["why"] = f"{where} {d['namespace']}, {ranks}, cosine {cos.get(rid, 0.0):.3f}, type {d['type']}, confidence {d['effective_confidence']:.2f}"
         hits.append(d)
     return hits
