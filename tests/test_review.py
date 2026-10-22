@@ -9,6 +9,7 @@ route needs the delete scope; the run's summary reaches `/health` and survives a
 
 from __future__ import annotations
 
+import hashlib
 import json
 import sys
 import threading
@@ -249,17 +250,20 @@ def test_candidate_expiry_days_defaults_to_14_and_0_turns_it_off(tmp_path):
 
 
 def test_the_route_needs_the_delete_scope_and_health_carries_the_run(tmp_path):
-    app = app_with(tmp_path, lambda title, user: verdict("session-state"), clients=[{"name": "desk", "ip": "127.0.0.1", "scopes": ["read", "write"]}])
+    token = "desk-token-for-tests-0123456789"
+    desk = {"name": "desk", "token_sha256": hashlib.sha256(token.encode()).hexdigest(), "scopes": ["read", "write"]}
+    app = app_with(tmp_path, lambda title, user: verdict("session-state"), clients=[desk])
     c = candidate(app, "Backup taken", "A backup was taken.", typ="implementation-change")
     http = srv.serve(app, 0, "127.0.0.1")
     base = f"http://127.0.0.1:{http.server_address[1]}"
+    headers = {"Content-Type": "application/json", "Authorization": f"Bearer {token}"}
     try:
-        req = urllib.request.Request(f"{base}/api/review", data=b"{}", method="POST")
+        req = urllib.request.Request(f"{base}/api/review", data=b"{}", method="POST", headers=headers)
         with pytest.raises(urllib.error.HTTPError) as err:
             urllib.request.urlopen(req, timeout=5)
         assert err.value.code == 403 and status(app, c) == "candidate"
         app.auth.clients[0]["scopes"].append("delete")
-        with urllib.request.urlopen(urllib.request.Request(f"{base}/api/review", data=b"{}", method="POST"), timeout=10) as resp:
+        with urllib.request.urlopen(urllib.request.Request(f"{base}/api/review", data=b"{}", method="POST", headers=headers), timeout=10) as resp:
             out = json.load(resp)
         assert out["forgotten"]["session-state"] == 1 and status(app, c) == "deleted"
         with urllib.request.urlopen(f"{base}/health", timeout=5) as resp:

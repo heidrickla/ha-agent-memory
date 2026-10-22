@@ -21,7 +21,9 @@ import threading
 import time
 import urllib.error
 import urllib.request
+from http.client import HTTPConnection
 from pathlib import Path
+from urllib.parse import urlsplit
 
 import pytest
 
@@ -107,6 +109,72 @@ def test_rest_reads_need_the_read_scope_like_mcp(http):
         assert raw(base, path, token=READER)[0] == 200, path
     status, body = raw(base, "/mcp", {"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {"name": "memory_get", "arguments": {"ids": [rid]}}}, WRITER)
     assert status == 200 and json.loads(body)["result"]["isError"] is True
+
+
+def send(base, method, path, body=b"", headers=None) -> tuple[int, bytes]:
+    """One request with exactly these headers: urllib would add its own Content-Type and Content-Length."""
+    url = urlsplit(base)
+    conn = HTTPConnection(url.hostname, url.port, timeout=10)
+    try:
+        conn.putrequest(method, path, skip_accept_encoding=True)
+        for k, v in (headers or {}).items():
+            conn.putheader(k, v)
+        conn.endheaders(body or None)
+        resp = conn.getresponse()
+        return resp.status, resp.read()
+    finally:
+        conn.close()
+
+
+def count_memories(app) -> int:
+    return app.store.db.execute("select count(*) from memories").fetchone()[0]
+
+
+def test_an_address_client_reads_and_never_writes_deletes_or_exports(http):
+    base, app = http
+    rid = app.store.store(rec(), "desktop")["id"]
+    assert raw(base, f"/api/get?ids={rid}")[0] == 200
+    assert raw(base, "/api/store", rec(title="Kiosk written by address"))[0] == 403
+    assert raw(base, "/api/forget", {"id": rid})[0] == 403
+    assert raw(base, "/api/export", {})[0] == 403
+    assert raw(base, "/api/review", {})[0] == 403
+    for name, args in (("memory_store", rec(title="Kiosk written by address")), ("memory_forget", {"id": rid}), ("memory_export", {})):
+        status, body = raw(base, "/mcp", {"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {"name": name, "arguments": args}})
+        assert status == 200 and json.loads(body)["result"]["isError"] is True, name
+    assert count_memories(app) == 1 and app.store.get(rid)["status"] == "active"
+    assert srv.Auth([{"name": "desk", "ip": "10.0.0.9", "scopes": ["admin"]}]).identify(None, "10.0.0.9") == ("desk", set(), False)
+
+
+def test_a_request_carrying_an_origin_is_refused_with_or_without_a_token(http):
+    base, app = http
+    store = json.dumps(rec(title="Kiosk written cross-site")).encode()
+    for headers in ({}, {"Authorization": f"Bearer {READER}"}):
+        status, _ = send(base, "POST", "/api/store", store, {"Origin": "http://example.invalid", "Content-Type": "application/json", "Content-Length": str(len(store)), **headers})
+        assert status == 403
+        status, body = send(base, "GET", f"/api/bootstrap?namespace={NS}", headers={"Origin": "http://example.invalid", **headers})
+        assert status == 403 and b"Kiosk" not in body
+    assert count_memories(app) == 0
+    assert send(base, "GET", f"/api/bootstrap?namespace={NS}", headers={"Authorization": f"Bearer {READER}"})[0] == 200
+
+
+def test_a_post_that_is_not_json_is_refused_before_it_is_read(http):
+    base, app = http
+    store = json.dumps(rec(title="Kiosk written as a form")).encode()
+    for ctype in ("text/plain", "application/x-www-form-urlencoded", "multipart/form-data; boundary=x", None):
+        headers = {"Authorization": f"Bearer {READER}", "Content-Length": str(len(store)), **({"Content-Type": ctype} if ctype else {})}
+        assert send(base, "POST", "/api/store", store, headers)[0] == 415, ctype
+    assert count_memories(app) == 0
+    ok = {"Authorization": f"Bearer {READER}", "Content-Type": "application/json; charset=utf-8", "Content-Length": str(len(store))}
+    assert send(base, "POST", "/api/store", store, ok)[0] == 200 and count_memories(app) == 1
+
+
+def test_a_post_body_length_is_bounded_and_never_negative(http):
+    base, app = http
+    auth = {"Authorization": f"Bearer {READER}", "Content-Type": "application/json"}
+    assert send(base, "POST", "/api/store", b"{}", {**auth, "Content-Length": "-1"})[0] == 400
+    assert send(base, "POST", "/api/store", b"{}", {**auth, "Content-Length": "x"})[0] == 400
+    assert send(base, "POST", "/api/store", b"{}", {**auth, "Content-Length": str(srv.MAX_BODY + 1)})[0] == 413
+    assert count_memories(app) == 0
 
 
 def test_a_receipt_answers_only_the_client_that_made_it(tmp_path):

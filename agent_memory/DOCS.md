@@ -13,7 +13,7 @@ Agents call `POST /mcp` on port 8765 with JSON-RPC (MCP streamable HTTP, JSON re
 
 Records are data, not instructions; every packet says so. Credentials and key material are refused at store time and the refusal is audited by pattern name only. `memory_forget` is a soft delete kept for `retention_deleted_days`. `memory_export` writes Markdown per namespace and one JSONL under `/data/exports`, inside Home Assistant backups.
 
-Clients are listed in the options: a `token_sha256` authenticates by bearer token, an `ip` alone by source address. Scopes: read, write, delete, export, admin. What a token client stores carries its name as the writer.
+Clients are listed in the options: a `token_sha256` authenticates by bearer token, an `ip` alone by source address. Scopes: read, write, delete, export, admin. An address client gets `read` whatever its scopes list; writing, deleting and exporting need a token. What a token client stores carries its name as the writer. A request with an `Origin` header is refused, and a POST must be `application/json` of at most 1 MiB.
 
 Status is the server's: `memory_store` writes `active`, extraction writes `candidate`, and so does a session close's summary when `summary_candidates` is on. `memory_update` takes the `revision` the caller read and changes nothing when the record has moved on; the reply carries the current record. `memory_session_close` with an `op_id` answers a replay from the same client with the same inputs with the first result; past `retention_deleted_days` a replay is refused as expired. REST reads need the `read` scope, as the MCP tools do.
 
@@ -27,7 +27,7 @@ A namespace in `hubs` is one whose sessions work on other repositories. Its `mem
 
 | Option | Default | Effect |
 |---|---|---|
-| `clients` | one address client | Who may call: `name`, `ip` or `token_sha256`, and `scopes`. |
+| `clients` | one address client, `read` | Who may call: `name`, `ip` or `token_sha256`, and `scopes`. An `ip` client reads only. |
 | `github_owner` | `heidrickla` | Remotes under this GitHub owner become `github/<owner>/<repo>`. |
 | `forge_owner`, `forge_hosts` | `heidrickla`, the forge's names | Remotes under this owner on these hosts become `gitea/<owner>/<repo>`. |
 | `project_links` | two projects | Repository namespaces that share a `projects/<name>` scope. |

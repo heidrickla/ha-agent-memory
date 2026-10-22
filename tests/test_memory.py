@@ -23,6 +23,7 @@ OPTIONS = {
     "clients": [
         {"name": "desk", "ip": "127.0.0.1", "scopes": ["read", "write", "delete", "export"]},
         {"name": "codex", "token_sha256": hashlib.sha256(b"t0ken-for-tests-0123456789").hexdigest(), "scopes": ["read"]},
+        {"name": "desk-token", "token_sha256": hashlib.sha256(b"desk-t0ken-for-tests-0123456789").hexdigest(), "scopes": ["read", "write", "delete", "export"]},
     ],
     "github_owner": "heidrickla",
     "forge_owner": "example",
@@ -340,6 +341,7 @@ def rpc(base, method, params=None, mid=1, headers=None):
 
 def test_mcp_over_http_end_to_end(http):
     base, app = http
+    desk = {"Authorization": "Bearer desk-t0ken-for-tests-0123456789"}  # writes need a token
     s, init = rpc(base, "initialize", {"protocolVersion": "2025-06-18", "capabilities": {}, "clientInfo": {"name": "t", "version": "0"}})
     assert s == 200 and init["result"]["serverInfo"]["name"] == "agent-memory"
     s, _ = call(base, "/mcp", {"jsonrpc": "2.0", "method": "notifications/initialized"})
@@ -359,26 +361,27 @@ def test_mcp_over_http_end_to_end(http):
         "memory_timeline",
         "memory_update",
     } <= names
-    s, stored = rpc(base, "tools/call", {"name": "memory_store", "arguments": rec()})
+    s, stored = rpc(base, "tools/call", {"name": "memory_store", "arguments": rec()}, headers=desk)
     doc = json.loads(stored["result"]["content"][0]["text"])
     assert stored["result"]["isError"] is False and doc["stored"]["type"] == "constraint"
     s, found = rpc(base, "tools/call", {"name": "memory_search", "arguments": {"namespace": NS, "query": "restarts permission"}})
     hits = json.loads(found["result"]["content"][0]["text"])["hits"]
     assert hits and hits[0]["id"] == doc["stored"]["id"]
-    s, refused = rpc(base, "tools/call", {"name": "memory_store", "arguments": rec(content="the token is uk1_" + "Q" * 39)})
+    s, refused = rpc(base, "tools/call", {"name": "memory_store", "arguments": rec(content="the token is uk1_" + "Q" * 39)}, headers=desk)
     assert refused["result"]["isError"] is True and "not stored" in refused["result"]["content"][0]["text"]
     assert any(a["action"] == "rejected" for a in app.audit_tail())
     s, closed = rpc(
         base,
         "tools/call",
         {"name": "memory_session_close", "arguments": {"namespace": NS, "summary": "Built the loops add-on.", "agent": "claude-code", "session": "s1", "notes": "details", "enrich": True}},
+        headers=desk,
     )
     assert json.loads(closed["result"]["content"][0]["text"])["enrichment"] == "off"  # no ollama_url configured
     s, unknown = rpc(base, "nothing/here")
     assert unknown["error"]["code"] == -32601
     s, health = call(base, "/health")
     assert s == 200 and health["records"] == 2 and health["fts5"] is True
-    s, exported = rpc(base, "tools/call", {"name": "memory_export", "arguments": {}})
+    s, exported = rpc(base, "tools/call", {"name": "memory_export", "arguments": {}}, headers=desk)
     out = json.loads(exported["result"]["content"][0]["text"])
     assert out["records"] == 2 and (Path(out["dir"]) / "memories.jsonl").exists()
 

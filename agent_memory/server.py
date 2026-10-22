@@ -6,8 +6,10 @@ One HTTP server carries three things: the MCP endpoint (`POST /mcp`, JSON-RPC ov
 streamable HTTP with JSON responses), a REST mirror of the same tools (`/api/...`) for
 scripts, and the admin page plus `/health`. Clients authenticate by a bearer token whose
 sha256 is in the options, or by source address for clients listed with an `ip`; each
-client carries scopes (read, write, delete, export, admin). A client with a token is identified
-by name: what it writes carries that name as `agent`, whatever the request says. Standard library only.
+client carries scopes (read, write, delete, export, admin). A client known by address alone gets
+`read` at most. A client with a token is identified by name: what it writes carries that name as
+`agent`, whatever the request says. A request with an `Origin` header is refused, and a POST must
+be `application/json` of at most `MAX_BODY` bytes. Standard library only.
 """
 
 from __future__ import annotations
@@ -45,6 +47,9 @@ REST_GET = {
     "/api/context": "memory_project_context",
     "/api/namespaces": "memory_timeline",
 }
+# A caller known by address alone is any process on that host, or a page in its browser: it reads only.
+ADDRESS_SCOPES = frozenset({"read"})
+MAX_BODY = 1 << 20  # bytes in one POST body
 
 
 def review_at(options: dict) -> str:
@@ -64,7 +69,8 @@ class Auth:
 
     def identify(self, header: str | None, peer_ip: str) -> tuple[str, set[str], bool] | None:
         """(name, scopes, by_token). A bearer token must match a client's hash; with no token, a client
-        listed by `ip` alone matches the source address. An unknown token never falls back to the address."""
+        listed by `ip` alone matches the source address and gets ADDRESS_SCOPES at most. An unknown token
+        never falls back to the address."""
         token = ""
         if header and header.lower().startswith("bearer "):
             token = header[7:].strip()
@@ -76,7 +82,7 @@ class Auth:
             return None
         for c in self.clients:
             if c.get("ip") and c["ip"] == peer_ip and not c.get("token_sha256"):
-                return c["name"], set(c.get("scopes") or ["read"]), False
+                return c["name"], set(c.get("scopes") or ["read"]) & ADDRESS_SCOPES, False
         return None
 
 
@@ -161,6 +167,7 @@ class App:
 def make_handler(app: App):
     class Handler(BaseHTTPRequestHandler):
         server_version = "agent-memory/0.1"
+        _length = 0  # the POST body length, set by _refusal
 
         def log_message(self, fmt, *args):
             LOG.debug(fmt, *args)
@@ -181,9 +188,27 @@ def make_handler(app: App):
             self._send(code, json.dumps(doc, ensure_ascii=False).encode())
 
         def _body(self) -> dict:
-            length = int(self.headers.get("Content-Length") or 0)
-            raw = self.rfile.read(length) if length else b""
+            raw = self.rfile.read(self._length) if self._length else b""
             return json.loads(raw or b"{}")
+
+        def _refusal(self, post: bool) -> tuple[int, str] | None:
+            """Why a request is refused before authentication, or None. A browser sends `Origin` on every
+            cross-site request and no agent client does; a page cannot send JSON cross-site without a preflight."""
+            if self.headers.get("Origin") is not None:
+                return 403, "cross-site requests are refused"
+            if not post:
+                return None
+            if self.headers.get_content_type() != "application/json":
+                return 415, "the body must be application/json"
+            try:
+                self._length = int(self.headers.get("Content-Length") or 0)
+            except ValueError:
+                return 400, "bad Content-Length"
+            if self._length < 0:
+                return 400, "bad Content-Length"
+            if self._length > MAX_BODY:
+                return 413, f"the body is over {MAX_BODY} bytes"
+            return None
 
         def _client(self) -> tuple[str, set[str], bool] | None:
             peer = self.client_address[0]
@@ -212,6 +237,10 @@ def make_handler(app: App):
             elif path == "/mcp":
                 self._send(405, b"", extra={"Allow": "POST"})
             elif path.startswith("/api/"):
+                refusal = self._refusal(post=False)
+                if refusal:
+                    self._json(refusal[0], {"error": refusal[1]})
+                    return
                 ident = self._client()
                 if not ident:
                     self._json(401, {"error": "unknown client"})
@@ -252,6 +281,10 @@ def make_handler(app: App):
         def do_POST(self):
             app.requests += 1
             path = urlsplit(self.path).path
+            refusal = self._refusal(post=True)
+            if refusal:
+                self._json(refusal[0], {"error": refusal[1]})
+                return
             ident = self._client()
             if not ident:
                 self._json(401, {"error": "unknown client"})

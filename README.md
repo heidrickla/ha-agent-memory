@@ -12,7 +12,8 @@ It carries storage, namespaces, FTS5 and embedding retrieval, progressive MCP to
 | Retrieval order | repository, its linked projects, given topics, global; a hub's search and task match then reach every other repository namespace |
 | Ranking | reciprocal rank fusion of FTS5 and cosine over record embeddings when the encoder answers, FTS5 otherwise ([Embedding retrieval](#embedding-retrieval)) |
 | Budgets | bootstrap 500 tokens over the whole response (2,000 bytes), search 750, records 2000, packet 4000 (hard limit 8000); every response reports its estimate and truncation |
-| Auth | per-client bearer token (sha256 in options) or source address; scopes read, write, delete, export, admin, checked by one rule for MCP tools and REST routes; a token client is recorded as the writer |
+| Auth | per-client bearer token (sha256 in options) or source address; scopes read, write, delete, export, admin, checked by one rule for MCP tools and REST routes; an address client gets `read` at most; a token client is recorded as the writer |
+| Requests | a request with an `Origin` header gets 403; a POST must be `application/json` (415) with a `Content-Length` from 0 to 1 MiB (400, 413) |
 | Filtering | every persisted field and queued payload: credentials, key material, JWTs, URL passwords and the `do-not-store` marker are refused and audited by field and pattern name; every database write passes the same screen, and audit context carrying a secret is kept as `[screened:<pattern>]` |
 | Page | ingress only, dark, drawn as graphics: status tiles, records by type and status, namespaces, audit rows per hour, model servers and encoder, nightly review and anchor sweep, unused records, latest audit rows |
 
@@ -25,7 +26,7 @@ It carries storage, namespaces, FTS5 and embedding retrieval, progressive MCP to
 | | |
 |---|---|
 | Status | set by the server: `memory_store` writes `active`; extraction and import write `candidate` through `Store.store_candidate`; a session close's summary is a `candidate` when the `summary_candidates` option is on, and is not kept otherwise (extraction reads it in the notes). States `active`, `candidate`, `superseded`, `deleted`; `memory_update` moves `candidate` to `active` and back; only a supersession makes `superseded` and only `memory_forget` makes `deleted` |
-| Writer | a token client's name replaces `agent`; an address client's `agent` is kept |
+| Writer | a token client's name replaces `agent`; only a token client writes |
 | Revision | an integer on every record, advanced by every mutation (content, anchors, anchor state, evidence, status, supersession, forget, rename). `memory_update(id, revision, changes)` applies only at that revision, anchors and status in the same transaction; a mismatch returns `revision` and `current` (MCP `isError`, REST 409) |
 | Transactions | each mutation and the reads it depends on commit together: an update, a store with its supersession, an anchor report with its evidence, an extraction's candidates with the job's completion, an answer with its job's. Every statement runs under the store lock, so no read sees another thread's open transaction |
 | Supersede | `supersedes` on a store retires a live active record in the same namespace; never the record itself, never a cycle, and only from an active replacement; checked in the store's transaction |

@@ -1,7 +1,7 @@
 configuration:
   clients:
     name: Clients
-    description: Who may call. A client with token_sha256 authenticates by bearer token and is recorded as the writer of what it stores; one with ip only, by source address. Scopes are read, write, delete, export, admin.
+    description: Who may call. A client with token_sha256 authenticates by bearer token and is recorded as the writer of what it stores; one with ip only, by source address, and reads only. Scopes are read, write, delete, export, admin.
   github_owner:
     name: GitHub owner
     description: Remotes under this GitHub owner become github/<owner>/<repo> namespaces.

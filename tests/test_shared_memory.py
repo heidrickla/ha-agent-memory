@@ -117,19 +117,19 @@ def test_extraction_and_import_write_candidates_through_the_internal_operation(s
     assert store.get(target["id"])["status"] == "active"
 
 
-def test_a_token_client_is_named_by_the_server_and_an_address_client_as_it_says(http):
+def test_a_token_client_is_named_by_the_server_and_an_address_client_only_reads(http):
     base, app = http
     err, out = tool(base, "memory_store", rec(agent="codex"), TOKEN)
     assert not err and out["stored"]["agent"] == "claude"
-    err, out = tool(base, "memory_store", rec(agent="codex", title="From the address client"))
-    assert not err and out["stored"]["agent"] == "codex"
+    err, refused = tool(base, "memory_store", rec(agent="codex", title="From the address client"))
+    assert err and "lacks the 'write' scope" in refused["error"]
     status, closed = call(base, "/api/session_close", {"namespace": NS, "summary": "Did things.", "agent": "codex", "session": "s1"}, TOKEN)
     assert status == 200 and app.store.get(closed["stored"])["agent"] == "claude"
     rid = out["stored"]["id"]
     err, _ = tool(base, "memory_corroborate", {"id": rid, "quote": "seen again", "agent": "codex"}, TOKEN)
     assert not err and app.store.evidence(rid)[0]["agent"] == "claude"
     assert srv.Auth(OPTIONS["clients"]).identify(f"Bearer {TOKEN}", "10.0.0.9") == ("claude", {"read", "write"}, True)
-    assert srv.Auth(OPTIONS["clients"]).identify(None, "127.0.0.1") == ("desktop", {"read", "write", "delete", "export"}, False)
+    assert srv.Auth(OPTIONS["clients"]).identify(None, "127.0.0.1") == ("desktop", {"read"}, False)
 
 
 # ------------------------------------------------------------------ 2. session summaries
@@ -272,26 +272,26 @@ def test_a_stale_revision_changes_nothing_and_returns_the_current_record(store):
 
 def test_mcp_and_rest_report_a_conflict_with_the_current_revision(http):
     base, app = http
-    err, out = tool(base, "memory_store", rec())
+    err, out = tool(base, "memory_store", rec(), TOKEN)
     rid = out["stored"]["id"]
-    err, ok = tool(base, "memory_update", {"id": rid, "revision": 1, "changes": {"content": "One."}})
+    err, ok = tool(base, "memory_update", {"id": rid, "revision": 1, "changes": {"content": "One."}}, TOKEN)
     assert not err and ok["updated"]["revision"] == 2
-    err, clash = tool(base, "memory_update", {"id": rid, "revision": 1, "changes": {"content": "Two."}})
+    err, clash = tool(base, "memory_update", {"id": rid, "revision": 1, "changes": {"content": "Two."}}, TOKEN)
     assert err and clash["revision"] == 2 and clash["current"]["content"] == "One."
-    status, body = call(base, "/api/update", {"id": rid, "revision": 1, "changes": {"content": "Three."}})
+    status, body = call(base, "/api/update", {"id": rid, "revision": 1, "changes": {"content": "Three."}}, TOKEN)
     assert status == 409 and body["revision"] == 2
-    err, missing = tool(base, "memory_update", {"id": rid, "changes": {"content": "No revision."}})
+    err, missing = tool(base, "memory_update", {"id": rid, "changes": {"content": "No revision."}}, TOKEN)
     assert err and "revision is required" in missing["error"]
-    err, unknown = tool(base, "memory_update", {"id": rid, "revision": 2, "changes": {"statuss": "active"}})
+    err, unknown = tool(base, "memory_update", {"id": rid, "revision": 2, "changes": {"statuss": "active"}}, TOKEN)
     assert err and "cannot change statuss" in unknown["error"]
     assert app.store.get(rid)["content"] == "One."
     for bad in ("two", True, 2.5, "2.0"):
-        err, refused = tool(base, "memory_update", {"id": rid, "revision": bad, "changes": {"content": "Bad revision."}})
+        err, refused = tool(base, "memory_update", {"id": rid, "revision": bad, "changes": {"content": "Bad revision."}}, TOKEN)
         assert err and "integer revision" in refused["error"], bad
     # A client holding the tool list from before revisions sends the number as a string.
-    err, ok = tool(base, "memory_update", {"id": rid, "revision": "2", "changes": {"content": "From a stale schema."}})
+    err, ok = tool(base, "memory_update", {"id": rid, "revision": "2", "changes": {"content": "From a stale schema."}}, TOKEN)
     assert not err and ok["updated"]["revision"] == 3
-    err, clash = tool(base, "memory_update", {"id": rid, "revision": "2", "changes": {"content": "Stale again."}})
+    err, clash = tool(base, "memory_update", {"id": rid, "revision": "2", "changes": {"content": "Stale again."}}, TOKEN)
     assert err and clash["revision"] == 3
 
 
@@ -415,9 +415,9 @@ def test_a_replayed_close_returns_the_first_result_and_acts_once(tmp_path):
 def test_a_lost_response_is_answered_by_the_replay_over_http(http):
     base, app = http
     body = {"namespace": NS, "summary": "Closed while the reply was lost.", "agent": "claude-code", "session": "s9", "notes": "n", "enrich": True, "op_id": "op-lost-000001"}
-    status, first = call(base, "/api/session_close", body)
+    status, first = call(base, "/api/session_close", body, TOKEN)
     assert status == 200 and "replayed" not in first
-    status, replay = call(base, "/api/session_close", body)  # the client never saw the first reply
+    status, replay = call(base, "/api/session_close", body, TOKEN)  # the client never saw the first reply
     assert status == 200 and replay["replayed"] is True and replay["stored"] == first["stored"]
     assert count(app.store, "type='session-summary'") == 1
 

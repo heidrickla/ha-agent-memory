@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.19.0
+
+- A client known by address alone gets `read` at most; writing, deleting, exporting and `POST /api/review` need a bearer token. The default `desktop` client lists `read`.
+- A request carrying an `Origin` header gets 403. A POST must be `application/json` (415 otherwise) with a `Content-Length` from 0 to 1 MiB (400 for a negative or unparsable length, 413 above it).
+
 ## 0.18.0
 
 - `memory_bootstrap` lists titles under short ids, without snippets: about three times the records in the same 500 tokens. `memory_get` takes the short id, the shortest prefix of 8 or more characters no other live record shares.
