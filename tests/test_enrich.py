@@ -24,7 +24,7 @@ GOOD = {
         {"type": "failure-and-fix", "title": "s6 hides the Supervisor token", "content": "Read it from /run/s6/container_environment in run.sh.", "confidence": 0.9},
         {"type": "next-step", "title": "Fix the six core log errors", "content": "Start with homeassistant.helpers.entity.", "confidence": 0.7},
         {"type": "nonsense-type", "title": "dropped", "content": "wrong type", "confidence": 0.5},
-        {"type": "repository-fact", "title": "leaked", "content": "the key is uk1_QQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQ", "confidence": 0.5},
+        {"type": "repository-fact", "title": "leaked", "content": "the key is uk1_" + "Q" * 39, "confidence": 0.5},
     ]
 }
 

@@ -112,7 +112,7 @@ def test_the_add_on_applies_namespace_renames_from_its_options(tmp_path):
 
 def test_secret_filter_refuses_credentials_and_marker():
     assert filters.screen("-----BEGIN RSA PRIVATE KEY-----\nabc") == "private_key"
-    assert filters.screen("token: uk1_QQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQ") in ("kuma_key", "assignment")
+    assert filters.screen("token: uk1_" + "Q" * 39) in ("kuma_key", "assignment")
     assert filters.screen("password=hunter2hunter2") == "assignment"
     assert filters.screen("https://user:secretpw@host/x") == "url_credentials"
     assert filters.screen("this line is do-not-store") == "do_not_store_marker"
@@ -365,7 +365,7 @@ def test_mcp_over_http_end_to_end(http):
     s, found = rpc(base, "tools/call", {"name": "memory_search", "arguments": {"namespace": NS, "query": "restarts permission"}})
     hits = json.loads(found["result"]["content"][0]["text"])["hits"]
     assert hits and hits[0]["id"] == doc["stored"]["id"]
-    s, refused = rpc(base, "tools/call", {"name": "memory_store", "arguments": rec(content="the token is uk1_QQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQ")})
+    s, refused = rpc(base, "tools/call", {"name": "memory_store", "arguments": rec(content="the token is uk1_" + "Q" * 39)})
     assert refused["result"]["isError"] is True and "not stored" in refused["result"]["content"][0]["text"]
     assert any(a["action"] == "rejected" for a in app.audit_tail())
     s, closed = rpc(
