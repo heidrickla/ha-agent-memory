@@ -1,8 +1,8 @@
 # Changelog
 
-## Unreleased
+## 0.19.2
 
-- Fused ranking multiplies each score by the record's evidence factor, its earned confidence over the confidence its writer asserted (1 for a record with no corroboration or contradiction). Full-text ranking already used earned confidence, but a record keeps its place in the cosine list, and one place is about 1.6 percent of a fused score, so a record contradicted twice still ranked above an unwitnessed twin with a slightly lower cosine. A hit with a factor other than 1 says `evidence x<factor>` in `why`.
+- Fused ranking multiplies each score by the record's evidence factor, its earned confidence over the confidence its writer asserted (1 for a record with no corroboration or contradiction). Full-text ranking already used earned confidence, but a record keeps its place in the cosine list, and one place is about 1.6 percent of a fused score, so a record contradicted twice still ranked above an unwitnessed twin with a slightly lower cosine. A hit with a factor other than 1 says `evidence x<factor>` in `why`. Replaying the frozen queries on a copy of the store, contradicted records in the top 3 results fell from 6 to 0, and the frozen retrieval eval is unchanged (MRR 0.8968), because none of its records carries evidence.
 
 ## 0.19.1
 
