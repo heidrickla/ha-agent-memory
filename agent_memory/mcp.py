@@ -294,15 +294,30 @@ class Memory:
         missing = [i for i in ids if not (rid := resolved[str(i)]) or not self.store.get(rid)]
         return {"records": packed, "missing": missing, "approx_tokens": used, "truncated": truncated, "note": NOTE}
 
-    def timeline(self, namespace: str, limit: int = 20, status: str | None = None) -> dict:
+    def timeline(self, namespace: str, limit: int = 20, status: str | None = None, after: str | None = None) -> dict:
         """`status` narrows the list: the token budget shows about nine records, so without it the
-        newest active records hide every older candidate from a review."""
+        newest active records hide every older candidate from a review. `next` is set while older
+        rows remain; passing it back as `after` pages on, so a record left undecided never hides the rest."""
         self.scopes(namespace)
         if status and status not in TIMELINE_STATUSES:
             raise ToolError(f"status must be one of {', '.join(TIMELINE_STATUSES)}")
-        rows = self.store.timeline(namespace, limit=max(1, min(int(limit), 100)), statuses=(status,) if status else ())
-        packed, truncated, used = self._pack([self._snippet(r, 100) for r in rows], BUDGETS["search"], ("id", "type", "title", "snippet", "status", "revision", "missing_anchors", "updated_at"))
-        return {"namespace": namespace, "items": packed, "candidates_pending": self.store.count_status(namespace, "candidate"), "approx_tokens": used, "truncated": truncated}
+        mark = None
+        if after:
+            mark = self.store.resolve(after)
+            if mark is None:
+                raise ToolError("after must be the id a previous memory_timeline returned as next")
+        cap = max(1, min(int(limit), 100))
+        rows = self.store.timeline(namespace, limit=cap + 1, statuses=(status,) if status else (), after=mark)
+        packed, truncated, used = self._pack([self._snippet(r, 100) for r in rows[:cap]], BUDGETS["search"], ("id", "type", "title", "snippet", "status", "revision", "missing_anchors", "updated_at"))
+        more = truncated or len(rows) > cap
+        return {
+            "namespace": namespace,
+            "items": packed,
+            "candidates_pending": self.store.count_status(namespace, "candidate"),
+            "approx_tokens": used,
+            "truncated": truncated,
+            "next": packed[-1]["id"] if more and packed else None,
+        }
 
     def store_record(self, record: dict, client: str) -> dict:
         """A direct write, from MCP or REST. Always active: status is the server's, and extraction and
@@ -563,8 +578,13 @@ TOOLS = [
     ),
     (
         "memory_timeline",
-        "Newest records first for a namespace, each with its revision, and the count of pending candidates. status narrows it; status=candidate is the review list.",
-        {"namespace": {"type": "string"}, "limit": {"type": "integer"}, "status": {"type": "string", "enum": list(TIMELINE_STATUSES)}},
+        "Newest records first for a namespace, each with its revision, and the count of pending candidates. status narrows it; status=candidate is the review list. A page holds about nine; while older records remain, next is set: pass it back as after for the following page.",
+        {
+            "namespace": {"type": "string"},
+            "limit": {"type": "integer"},
+            "status": {"type": "string", "enum": list(TIMELINE_STATUSES)},
+            "after": {"type": "string", "description": "the next value a previous memory_timeline call returned"},
+        },
         ["namespace"],
         "read",
     ),
@@ -708,7 +728,7 @@ def call_tool(mem: Memory, name: str, args: dict, client: str, export_dir: str, 
     if name == "memory_get":
         return mem.get(list(args.get("ids") or []))
     if name == "memory_timeline":
-        return mem.timeline(args["namespace"], args.get("limit") or 20, args.get("status"))
+        return mem.timeline(args["namespace"], args.get("limit") or 20, args.get("status"), args.get("after"))
     if name == "memory_project_context":
         return mem.project_context(args["namespace"], args.get("task", ""), args.get("topics"), args.get("budget"), client)
     if name == "memory_store":

@@ -212,6 +212,32 @@ def test_the_review_list_reaches_candidates_behind_active_records(memory, store)
     assert "status" in dict(mcp.tool_list()[[t["name"] for t in mcp.tool_list()].index("memory_timeline")])["inputSchema"]["properties"]
 
 
+def test_the_review_list_pages_past_undecided_candidates(memory, store):
+    """A page holds about nine; candidates left undecided at the top must not hide the rest. Paging
+    with `next` reaches every candidate once, ties in created_at included, and stops with next None."""
+    made = [store.store(rec(title=f"Candidate {n}", content=f"Waiting {n}.", status="candidate"), "desk")["id"] for n in range(25)]
+    with store.lock:
+        store.db.execute("update memories set created_at=? where id in (" + ",".join("?" for _ in made[:12]) + ")", ("2026-10-25T06:33:10+00:00", *made[:12]))
+    seen: list[str] = []
+    after = None
+    for _ in range(25):
+        page = mcp.call_tool(memory, "memory_timeline", {"namespace": NS, "status": "candidate", "limit": 100, **({"after": after} if after else {})}, "desk", "")
+        seen += [i["id"] for i in page["items"]]
+        after = page["next"]
+        if after is None:
+            break
+    assert sorted(seen) == sorted(made) and len(seen) == len(set(seen))
+    assert mcp.call_tool(memory, "memory_timeline", {"namespace": NS, "status": "candidate", "limit": 100}, "desk", "")["next"] is not None
+    with pytest.raises(mcp.ToolError):
+        memory.timeline(NS, 20, "candidate", "not-a-record")
+    first = memory.timeline(NS, 3, "candidate")
+    assert not first["truncated"] and first["next"] == first["items"][-1]["id"], "a page cut by limit, not by budget, still says more remain"
+    rest = [i["id"] for i in memory.timeline(NS, 100, "candidate", first["next"])["items"]]
+    assert rest and not set(rest) & {i["id"] for i in first["items"]}
+    store.forget(first["next"], "desk")
+    assert [i["id"] for i in memory.timeline(NS, 100, "candidate", first["next"])["items"]] == rest, "a cursor forgotten after it was read still pages"
+
+
 def test_anchors_are_stored_validated_and_replaced(store):
     r = store.store(rec(anchors=["entity:sensor.b", "path:D:/x/y.txt", "entity:sensor.a"]), "desk")
     assert store.get(r["id"])["anchors"] == ["entity:sensor.a", "entity:sensor.b", "path:D:/x/y.txt"]

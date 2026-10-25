@@ -1130,16 +1130,24 @@ class Store:
         with self.lock:
             return [self._row(r) for r in self.db.execute(sql, params).fetchall()]
 
-    def timeline(self, namespace: str, limit: int = 30, statuses: tuple[str, ...] = ()) -> list[dict]:
+    def timeline(self, namespace: str, limit: int = 30, statuses: tuple[str, ...] = (), after: str | None = None) -> list[dict]:
         """Newest first, every status unless `statuses` names some: the review of candidates reads
-        this, and bootstrap asks for active records only."""
+        this, and bootstrap asks for active records only. `after` is the id of the last row a caller
+        saw; the rows older than it follow. created_at has one-second resolution, so insertion order
+        (rowid, ascending as the unordered sort left it) breaks ties."""
         sql = "select * from memories where namespace=? and deleted_at is null"
         params: list = [namespace]
         if statuses:
             sql += " and status in (" + ",".join("?" for _ in statuses) + ")"
             params += list(statuses)
         with self.lock:
-            return [self._row(r) for r in self.db.execute(sql + " order by created_at desc limit ?", (*params, limit)).fetchall()]
+            if after is not None:
+                mark = self.db.execute("select created_at, rowid from memories where id=?", (after,)).fetchone()
+                if mark is None:
+                    raise KeyError(after)
+                sql += " and (created_at < ? or (created_at = ? and rowid > ?))"
+                params += [mark["created_at"], mark["created_at"], mark["rowid"]]
+            return [self._row(r) for r in self.db.execute(sql + " order by created_at desc, rowid asc limit ?", (*params, limit)).fetchall()]
 
     def count_status(self, namespace: str, status: str) -> int:
         return self.db.execute("select count(*) from memories where namespace=? and status=? and deleted_at is null", (namespace, status)).fetchone()[0]
