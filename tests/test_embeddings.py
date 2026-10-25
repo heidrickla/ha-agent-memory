@@ -4,7 +4,7 @@ The encoder here is a fake OpenAI-style server with bag-of-words vectors. What i
 are the offline test's, a dead or slow encoder never fails or delays a search past the timeout, a
 vector goes stale on an edit or a model change, forget and purge drop it, the backfill covers every
 record search can return, cosine reaches exactly the records FTS can, and the fusion is the offline
-test's configuration c.
+test's configuration c, scaled by what the evidence made of each record's confidence.
 """
 
 from __future__ import annotations
@@ -241,6 +241,38 @@ def test_production_fusion_is_the_offline_tests_configuration_c(tmp_path, enc):
         for name in differs_from:
             differs_from[name] += oracle["c rrf"] != oracle[name]
     assert all(differs_from.values()), f"control: the fusion differs from each list alone somewhere, {differs_from}"
+
+
+def twin_order(app, twins: tuple[str, str], cosines: tuple[float, float]) -> list[dict]:
+    """Fusion of two same-text records whose vectors sit at the given cosines to the query."""
+    a, b = twins
+    vecs = {a: [cosines[0], math.sqrt(1 - cosines[0] ** 2), 0.0], b: [cosines[1], math.sqrt(1 - cosines[1] ** 2), 0.0]}
+    fts = app.store.search("forge runner image tag", [NS], limit=20)
+    return embed.fuse(app.store, fts, [1.0, 0.0, 0.0], vecs, [NS], 5)
+
+
+def test_a_record_contradicted_twice_ranks_below_an_unwitnessed_twin_with_a_lower_cosine(tmp_path):
+    """Full-text already sinks the contradicted record, but its closer vector keeps it first in the cosine list."""
+    app = srv.App(options(None), str(tmp_path))
+    text = ("Forge runner image tag", "The forge runner uses the act image for ubuntu-latest jobs.")
+    a = put(app, *text, type="repository-fact", confidence=0.95)
+    b = put(app, *text, type="repository-fact", confidence=0.95)
+    assert [h["id"] for h in twin_order(app, (a, b), (0.85, 0.80))] == [a, b], "control: with no evidence the closer vector wins"
+    for n in range(2):
+        app.store.corroborate(a, f"the runner image was not act, check {n}", "contradicts", "desk")
+    hits = twin_order(app, (a, b), (0.85, 0.80))
+    assert [h["id"] for h in hits] == [b, a]
+    assert "evidence x0.13" in hits[1]["why"] and "evidence" not in hits[0]["why"]
+
+
+def test_the_evidence_factor_is_one_unwitnessed_and_earned_over_asserted_when_witnessed(tmp_path):
+    app = srv.App(options(None), str(tmp_path))
+    rid = put(app, "Encoder card", "The encoder runs on card one.", confidence=0.8)
+    assert embed.evidence_factor(app.store.get(rid)) == 1.0
+    app.store.corroborate(rid, "seen on card one", "corroborates", "desk")
+    assert embed.evidence_factor(app.store.get(rid)) == pytest.approx((2 / 3) / 0.8, abs=1e-3)
+    app.store.corroborate(rid, "moved to card two", "contradicts", "desk")
+    assert embed.evidence_factor(app.store.get(rid)) == pytest.approx((1 / 3) / 0.8, abs=1e-3)
 
 
 def test_a_short_limit_is_the_head_of_the_full_depth_fusion(tmp_path, enc):

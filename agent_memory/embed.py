@@ -205,11 +205,21 @@ def scoped_vectors(store, identity: tuple[str, str], scopes: list[str], statuses
     return out
 
 
+def evidence_factor(rec: dict) -> float:
+    """1.0 for a record no one has witnessed, else its earned confidence over the confidence its writer asserted.
+
+    The full-text list already ranks on earned confidence, but the record keeps its cosine place, and one
+    place is about 1.6 percent of a score, so a contradiction alone could not outweigh a closer vector."""
+    if not (rec["proof_count"] or rec["refutation_count"]) or rec["confidence"] <= 0:
+        return 1.0
+    return rec["effective_confidence"] / rec["confidence"]
+
+
 def fuse(store, fts: list[dict], qvec: list[float], vectors: dict, scopes: list[str], limit: int) -> list[dict]:
-    """Reciprocal rank fusion of the FTS list and the cosine list: configuration c of the offline test.
+    """Reciprocal rank fusion of the FTS list and the cosine list (configuration c of the offline test), scaled by evidence.
 
     Each list is cut to `max(limit, FUSE_DEPTH)`; a record scores the sum of 1/(RRF_K + its position)
-    over the lists holding it; ties go to the higher cosine, then the lower id."""
+    over the lists holding it, times its `evidence_factor`; ties go to the higher cosine, then the lower id."""
     depth = max(limit, FUSE_DEPTH)
     cos = {rid: math.sumprod(qvec, v) for rid, v in vectors.items()}
     lists = {"full-text": [h["id"] for h in fts[:depth]], "cosine": sorted(cos, key=lambda i: (-cos[i], i))[:depth]}
@@ -219,16 +229,17 @@ def fuse(store, fts: list[dict], qvec: list[float], vectors: dict, scopes: list[
         for n, rid in enumerate(ids, 1):
             score[rid] = score.get(rid, 0.0) + 1.0 / (RRF_K + n)
             place.setdefault(rid, {})[name] = n
+    docs = {rid: d for rid in score if (d := store.get(rid)) is not None}
+    factor = {rid: evidence_factor(d) for rid, d in docs.items()}
     hits = []
-    for rid in sorted(score, key=lambda i: (-score[i], -cos.get(i, -1.0), i))[:limit]:
-        d = store.get(rid)
-        if d is None:
-            continue
+    for rid in sorted(docs, key=lambda i: (-score[i] * factor[i], -cos.get(i, -1.0), i))[:limit]:
+        d = docs[rid]
         where = f"scope #{scopes.index(d['namespace']) + 1}" if d["namespace"] in scopes else "reach"
         ranks = ", ".join(f"{name} #{n}" for name, n in place[rid].items())
-        d["rank"] = round(score[rid], 5)
+        d["rank"] = round(score[rid] * factor[rid], 5)
         d["cosine"] = round(cos.get(rid, 0.0), 4)
-        d["why"] = f"{where} {d['namespace']}, {ranks}, cosine {cos.get(rid, 0.0):.3f}, type {d['type']}, confidence {d['effective_confidence']:.2f}"
+        evidence = f", evidence x{factor[rid]:.2f}" if factor[rid] != 1.0 else ""
+        d["why"] = f"{where} {d['namespace']}, {ranks}, cosine {cos.get(rid, 0.0):.3f}, type {d['type']}, confidence {d['effective_confidence']:.2f}{evidence}"
         hits.append(d)
     return hits
 

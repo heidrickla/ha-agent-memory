@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- Fused ranking multiplies each score by the record's evidence factor, its earned confidence over the confidence its writer asserted (1 for a record with no corroboration or contradiction). Full-text ranking already used earned confidence, but a record keeps its place in the cosine list, and one place is about 1.6 percent of a fused score, so a record contradicted twice still ranked above an unwitnessed twin with a slightly lower cosine. A hit with a factor other than 1 says `evidence x<factor>` in `why`.
+
 ## 0.19.1
 
 - `memory_timeline` pages: while older records remain it returns `next`, and `after=<next>` returns the page after it, ordered by `created_at` then id so records stored in the same second are neither skipped nor repeated. A page still holds about nine, so candidates left undecided at the top had hidden every older one from a review. `GET /api/timeline` takes `after` too.

@@ -19,7 +19,7 @@ Status is the server's: `memory_store` writes `active`, extraction writes `candi
 
 A namespace in `hubs` is one whose sessions work on other repositories. Its `memory_search` and the task match in `memory_project_context` also cover every other repository namespace (`reach` in the response), at a weight below all of its own scopes.
 
-`embed_url` (an OpenAI-style `/v1` base URL), `embed_model` and `embed_timeout_s` turn on embedding retrieval: `memory_search` and the task match rank by reciprocal rank fusion of full-text search and cosine over record vectors whenever the encoder answers within the timeout and every record in reach has a current vector, and by full-text search otherwise. `ranking` in the response says which. `/health` shows `embeddings`. Without `embed_url` search is full-text only.
+`embed_url` (an OpenAI-style `/v1` base URL), `embed_model` and `embed_timeout_s` turn on embedding retrieval: `memory_search` and the task match rank by reciprocal rank fusion of full-text search and cosine over record vectors, each score scaled by the record's earned over asserted confidence, whenever the encoder answers within the timeout and every record in reach has a current vector, and by full-text search otherwise. `ranking` in the response says which. `/health` shows `embeddings`. Without `embed_url` search is full-text only.
 
 `namespace_renames` moves stored namespaces after an owner rename, applied at start: `{from: gitea/example/, to: gitea/heidrickla/}` rewrites every `gitea/example/<repo>` record, job, query and standing question to `gitea/heidrickla/<repo>`. A rerun moves nothing. Set `forge_owner`, `project_links` and `hubs` to the new owner at the same time.
 
