@@ -5,6 +5,16 @@ Home Assistant add-on: one shared, bounded memory for Claude Code, Codex and oth
 [![Add the repository to Home Assistant](https://my.home-assistant.io/badges/supervisor_add_addon_repository.svg)](https://my.home-assistant.io/redirect/supervisor_add_addon_repository/?repository_url=https%3A%2F%2Fgithub.com%2Fheidrickla%2Fha-agent-memory)
 [![Open the add-on in Home Assistant](https://my.home-assistant.io/badges/supervisor_addon.svg)](https://my.home-assistant.io/redirect/supervisor_addon/?addon=d6a204a0_agent_memory&repository_url=https%3A%2F%2Fgithub.com%2Fheidrickla%2Fha-agent-memory)
 
+## Screenshots
+
+![The Memory panel with its status tiles, the Connect an agent card and records by type](docs/images/panel.png)
+
+The Memory panel after a few example sessions: status, the commands that connect Claude Code and Codex, and records by type.
+
+![Records per namespace and the audit of the last 24 hours by action and by client](docs/images/activity.png)
+
+Records per namespace, and the last 24 hours of audited writes by action and client.
+
 ## Setup
 
 1. Add the repository with the first button, then open Agent Memory with the second and install it.
