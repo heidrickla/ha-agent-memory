@@ -1,7 +1,7 @@
 """The OpenAI-style client: a `/v1` URL selects it, and both job kinds run through it end to end.
 
-agent-memory's model moved to Bonsai behind llama-swap, which speaks `/v1/models` and
-`/v1/chat/completions`, not Ollama's `/api/tags` and `/api/chat`. The Ollama path stays.
+llama-server and llama-swap speak `/v1/models` and `/v1/chat/completions`, not Ollama's
+`/api/tags` and `/api/chat`. The Ollama path stays.
 """
 
 from __future__ import annotations
@@ -22,7 +22,7 @@ from enrich import Ollama, OpenAIChat, Worker, client_for
 from store import Store
 
 NS = "gitea/heidrickla/ha-management"
-GOOD = {"memories": [{"type": "constraint", "title": "One model per GPU", "content": "Card 0 serves Bonsai and nothing else.", "confidence": 0.9}]}
+GOOD = {"memories": [{"type": "constraint", "title": "One model per GPU", "content": "Card 0 serves the memory model and nothing else.", "confidence": 0.9}]}
 
 
 class FakeOpenAI(BaseHTTPRequestHandler):
@@ -46,7 +46,7 @@ class FakeOpenAI(BaseHTTPRequestHandler):
 
     def do_GET(self):
         if self.path == "/v1/models":
-            self._send(200, {"object": "list", "data": [{"id": "bonsai2-memory"}]})
+            self._send(200, {"object": "list", "data": [{"id": "memory-model"}]})
         else:
             self._send(404, {"error": "not found"})
 
@@ -79,7 +79,7 @@ def options(url: str, **over) -> dict:
         "forge_hosts": [],
         "project_links": [],
         "ollama_url": url,
-        "ollama_model": "bonsai2-memory",
+        "ollama_model": "memory-model",
         "ollama_timeout_s": 10,
     }
     o.update(over)
@@ -102,10 +102,10 @@ def test_availability_is_read_from_v1_models(v1):
 
 
 def test_the_extract_request_asks_for_json_with_thinking_off(v1):
-    OpenAIChat(v1, "default").extract(NS, "notes", "bonsai2-memory")
+    OpenAIChat(v1, "default").extract(NS, "notes", "memory-model")
     path, body = FakeOpenAI.seen[-1]
     assert path == "/v1/chat/completions"
-    assert body["model"] == "bonsai2-memory" and body["stream"] is False and body["temperature"] == 0.1
+    assert body["model"] == "memory-model" and body["stream"] is False and body["temperature"] == 0.1
     fmt = body.get("response_format") or {}
     assert fmt.get("type") == "json_schema", "json_object is not enforced by the fork; a schema is compiled to a grammar"
     assert fmt["json_schema"]["schema"]["required"] == ["memories"]
@@ -126,26 +126,26 @@ def test_the_answer_request_is_prose_with_thinking_off(v1):
 
 
 def test_both_job_kinds_run_through_a_v1_server(tmp_path, v1, caplog):
-    app = srv.App(options(v1, ollama_models=["extract:bonsai2-memory", "answer:bonsai2-memory"]), str(tmp_path))
+    app = srv.App(options(v1, ollama_models=["extract:memory-model", "answer:memory-model"]), str(tmp_path))
     assert app.health()["enrichment"]["api"] == "openai"
-    closed = app.memory.session_close(NS, "Served Bonsai.", "claude-code", "s1", "notes about the card", "desk", True)
+    closed = app.memory.session_close(NS, "Served the memory model.", "claude-code", "s1", "notes about the card", "desk", True)
     assert closed["enrichment"] == "queued"
     with caplog.at_level("INFO", logger="agent-memory.enrich"):
         assert app.worker.step() is True
     cands = [c for c in app.store.by_namespace([NS], statuses=("candidate",)) if c["type"] != "session-summary"]
     assert [c["title"] for c in cands] == ["One model per GPU"]
-    assert cands[0]["agent"] == "openai:bonsai2-memory", "the record must name the API and the model that served"
-    assert any("extract job" in r.getMessage() and "bonsai2-memory" in r.getMessage() for r in caplog.records)
+    assert cands[0]["agent"] == "openai:memory-model", "the record must name the API and the model that served"
+    assert any("extract job" in r.getMessage() and "memory-model" in r.getMessage() for r in caplog.records)
 
-    FakeOpenAI.content = "Card 0 serves Bonsai."
-    app.store.store({"namespace": NS, "title": "Card 0", "content": "Card 0 serves Bonsai and nothing else."}, "desk")
+    FakeOpenAI.content = "Card 0 serves the memory model."
+    app.store.store({"namespace": NS, "title": "Card 0", "content": "Card 0 serves the memory model and nothing else."}, "desk")
     app.store.add_question(NS, "what does card 0 serve", "desk")
     caplog.clear()
     with caplog.at_level("INFO", logger="agent-memory.enrich"):
         assert app.worker.step() is True
     q = app.store.find_question([NS], "what does card 0 serve")
-    assert q["answer"] == "Card 0 serves Bonsai." and q["model"] == "openai:bonsai2-memory"
-    assert any("answer job" in r.getMessage() and "bonsai2-memory" in r.getMessage() for r in caplog.records)
+    assert q["answer"] == "Card 0 serves the memory model." and q["model"] == "openai:memory-model"
+    assert any("answer job" in r.getMessage() and "memory-model" in r.getMessage() for r in caplog.records)
     assert {p for p, _ in FakeOpenAI.seen} == {"/v1/chat/completions"}
 
 
@@ -185,7 +185,7 @@ def test_an_unknown_alias_costs_the_next_model(tmp_path, v1):
     w = Worker(Store(str(tmp_path / "m.db")), options(v1, ollama_models=["extract:not-served"]))
     w.store.enqueue("extract", NS, {"notes": "some notes", "session": "s1"})
     assert w.step() is True
-    assert [b["model"] for _, b in FakeOpenAI.seen] == ["not-served", "bonsai2-memory"]
+    assert [b["model"] for _, b in FakeOpenAI.seen] == ["not-served", "memory-model"]
 
 
 def test_a_dead_v1_server_keeps_jobs_waiting(tmp_path):

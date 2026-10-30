@@ -19,14 +19,14 @@ from enrich import Pool, Worker
 from store import Store
 
 NS = "gitea/heidrickla/ha-management"
-GOOD = json.dumps({"memories": [{"type": "constraint", "title": "One model per GPU", "content": "Card 0 serves Bonsai only.", "confidence": 0.9}]})
+GOOD = json.dumps({"memories": [{"type": "constraint", "title": "One model per GPU", "content": "Card 0 serves the memory model only.", "confidence": 0.9}]})
 
 
 class FakeServer:
     """One model server: `up` is what its probe answers; `fail` is raised by a call; `delay` holds each call."""
 
     api = "openai"
-    model = "bonsai2-memory"
+    model = "memory-model"
 
     def __init__(self, base: str, up: bool = True, fail: Exception | None = None, delay: float = 0.0):
         self.base, self.up, self.fail, self.delay = base, up, fail, delay
@@ -57,13 +57,13 @@ class FakeServer:
 
 def worker_with(tmp_path, *servers, **options) -> tuple[Worker, Store]:
     store = Store(str(tmp_path / "m.db"))
-    w = Worker(store, {"ollama_model": "bonsai2-memory", **options}, poll_s=30.0)
+    w = Worker(store, {"ollama_model": "memory-model", **options}, poll_s=30.0)
     w.pool = Pool(list(servers))
     return w, store
 
 
 def queue_extract(store: Store) -> None:
-    store.enqueue("extract", NS, {"notes": "Card 0 serves Bonsai only.", "session": "s1"})
+    store.enqueue("extract", NS, {"notes": "Card 0 serves the memory model only.", "session": "s1"})
 
 
 def test_options_give_the_preferred_server_then_the_fallback(tmp_path):
@@ -83,14 +83,14 @@ def test_the_call_goes_to_the_server_the_probe_found_live(tmp_path):
     t0 = time.monotonic()
     assert w.step() is True
     assert time.monotonic() - t0 < 1.0, "a dead server costs the call nothing"
-    assert desk.calls == [] and rack.calls == ["extract:bonsai2-memory"]
+    assert desk.calls == [] and rack.calls == ["extract:memory-model"]
 
 
 def test_the_preferred_server_serves_when_both_are_live(tmp_path):
     desk, rack = FakeServer("http://desk/v1"), FakeServer("http://rack/v1")
     w, store = worker_with(tmp_path, desk, rack)
     queue_extract(store)
-    assert w.step() is True and desk.calls == ["extract:bonsai2-memory"] and rack.calls == []
+    assert w.step() is True and desk.calls == ["extract:memory-model"] and rack.calls == []
 
 
 def test_a_server_that_does_not_answer_is_marked_down_and_the_call_moves_on(tmp_path):
@@ -98,11 +98,11 @@ def test_a_server_that_does_not_answer_is_marked_down_and_the_call_moves_on(tmp_
     rack = FakeServer("http://rack/v1")
     w, store = worker_with(tmp_path, desk, rack)
     queue_extract(store)
-    assert w.step() is True and rack.calls == ["extract:bonsai2-memory"]
+    assert w.step() is True and rack.calls == ["extract:memory-model"]
     assert [s["live"] for s in w.pool.state()] == [False, True]
     queue_extract(store)
     probes = desk.probes
-    assert w.step() is True and desk.calls == ["extract:bonsai2-memory"], "down until its next probe: not asked again"
+    assert w.step() is True and desk.calls == ["extract:memory-model"], "down until its next probe: not asked again"
     assert desk.probes == probes, "and the next call did not probe it either"
 
 
@@ -112,7 +112,7 @@ def test_an_http_error_is_the_models_failure_not_the_servers(tmp_path):
     w, store = worker_with(tmp_path, desk, rack, ollama_models=["extract:needle"])
     queue_extract(store)
     assert w.step() is True
-    assert desk.calls == ["extract:needle", "extract:bonsai2-memory"], "the next model on the same server"
+    assert desk.calls == ["extract:needle", "extract:memory-model"], "the next model on the same server"
     assert rack.calls == ["extract:needle"], "no model served there: the chain starts again on the next server"
     assert [s["live"] for s in w.pool.state()] == [True, True], "a server that answered stays live"
 
@@ -122,7 +122,7 @@ def test_a_server_that_answers_gets_the_call_whether_or_not_its_model_is_running
     desk = FakeServer("http://desk/v1", delay=0.3)  # the first request pays the load
     w, store = worker_with(tmp_path, desk, FakeServer("http://rack/v1"))
     queue_extract(store)
-    assert w.step() is True and desk.calls == ["extract:bonsai2-memory"]
+    assert w.step() is True and desk.calls == ["extract:memory-model"]
 
 
 def test_the_probe_runs_on_its_own_clock_not_per_call(tmp_path):
@@ -203,17 +203,17 @@ def test_the_router_serves_while_it_answers_and_the_hosts_direct_only_when_it_do
     w, store = worker_with(tmp_path, router, desk, rack)
     w.pool = Pool([router, desk, rack], tiers=[0, 1, 1])
     queue_extract(store)
-    assert w.step() is True and router.calls == ["extract:bonsai2-memory"] and desk.calls == rack.calls == []
+    assert w.step() is True and router.calls == ["extract:memory-model"] and desk.calls == rack.calls == []
     with w.pool.using(0):
         assert w.pool.order() == [0], "a busy router still takes the call; the hosts direct are only its standby"
     router.up = False
     w.pool.checked = None
     queue_extract(store)
-    assert w.step() is True and desk.calls == ["extract:bonsai2-memory"], "router down: the preferred host direct"
+    assert w.step() is True and desk.calls == ["extract:memory-model"], "router down: the preferred host direct"
     router.up = True
     w.pool.checked = None
     queue_extract(store)
-    assert w.step() is True and router.calls == ["extract:bonsai2-memory"] * 2 and len(desk.calls) == 1
+    assert w.step() is True and router.calls == ["extract:memory-model"] * 2 and len(desk.calls) == 1
 
 
 def test_the_review_keeps_two_workers_behind_one_router(tmp_path):

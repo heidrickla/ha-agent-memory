@@ -1,6 +1,6 @@
 [project]
 name = "ha-agent-memory"
-version = "0.1.0"
+version = "0.20.0"
 description = "Home Assistant add-on: shared, bounded context for coding agents over MCP"
 requires-python = ">=3.12"
 license = "MIT"

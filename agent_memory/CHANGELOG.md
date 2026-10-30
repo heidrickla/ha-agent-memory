@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.20.0
+
+- A client listed in `clients` by name alone gets a token the add-on generates at start. The token is shown once in the add-on's log, beside the Claude Code command and the Codex setting that use it; only its sha256 is kept, in `/data/client_tokens.json`. Removing the client drops its token, so adding it back issues a new one. Clients with an `ip` or a `token_sha256` work as before.
+- The default options are two such clients, `claude-code` and `codex`, with read, write and delete, so a new install needs no option typed. The other defaults are gone from the options: `github_owner`, `forge_owner`, `forge_hosts` and `hubs` are optional and empty, `project_links` is empty, and the numeric and model options keep their values as built-in defaults.
+- `memory_namespace` maps a GitHub remote under its own owner when `github_owner` is unset, and a remote on a `forge_hosts` host under its own owner when `forge_owner` is unset. A configured owner still narrows the host to that owner.
+- The page has a Connect an agent card: each client and how it authenticates, the MCP endpoint, and the commands for Claude Code and Codex. It never shows a token or a hash.
+- `/health` carries `version`, and the HTTP server and MCP `serverInfo` report the add-on version.
+- The image builds from `ghcr.io/home-assistant/base:3.21` for both architectures with its labels in the Dockerfile; `build.yaml` is gone. `advanced`, `boot` and `stage` left `config.yaml`, where they were deprecated or at their defaults, and the `watchdog` URL became the image's `HEALTHCHECK` on `/healthz`.
+
 ## 0.19.2
 
 - Fused ranking multiplies each score by the record's evidence factor, its earned confidence over the confidence its writer asserted (1 for a record with no corroboration or contradiction). Full-text ranking already used earned confidence, but a record keeps its place in the cosine list, and one place is about 1.6 percent of a fused score, so a record contradicted twice still ranked above an unwitnessed twin with a slightly lower cosine. A hit with a factor other than 1 says `evidence x<factor>` in `why`. Replaying the frozen queries on a copy of the store, contradicted records in the top 3 results fell from 6 to 0, and the frozen retrieval eval is unchanged (MRR 0.8968), because none of its records carries evidence.
@@ -10,7 +19,7 @@
 
 ## 0.19.0
 
-- A client known by address alone gets `read` at most; writing, deleting, exporting and `POST /api/review` need a bearer token. The default `desktop` client lists `read`.
+- A client known by address alone gets `read` at most; writing, deleting, exporting and `POST /api/review` need a bearer token. The default address client lists `read`.
 - A request carrying an `Origin` header gets 403. A POST must be `application/json` (415 otherwise) with a `Content-Length` from 0 to 1 MiB (400 for a negative or unparsable length, 413 above it).
 
 ## 0.18.0
@@ -47,7 +56,7 @@
 
 ## 0.15.0
 
-- `ollama_direct_urls`: model servers in a lower tier, asked only while `ollama_url` and `ollama_fallback_url` have no live server. With the Voice Bridge's router as `ollama_url`, the hosts are asked direct only while the bridge is down. `/health` `enrichment.servers` names each server's tier.
+- `ollama_direct_urls`: model servers in a lower tier, asked only while `ollama_url` and `ollama_fallback_url` have no live server. With a router in front of the hosts as `ollama_url`, the hosts are asked direct only while the router is down. `/health` `enrichment.servers` names each server's tier.
 - The nightly review runs at least two workers, so a router behind one URL splits them across its hosts.
 
 ## 0.14.0
@@ -129,19 +138,19 @@
 
 ## 0.7.0
 
-- `namespace_renames` option: a list of `{from, to}` owner prefixes (`gitea/example/` to `gitea/heidrickla/`) applied at start to records, their `repository`, jobs, queries and standing questions. Idempotent; one `rename-namespaces` audit row per move that changed something; a question already under the new namespace keeps that copy.
-- Defaults follow the forge owner rename: `forge_owner: heidrickla`, and `project_links` and `hubs` name `gitea/heidrickla/...`. The Supervisor keeps an existing install's values, so those three are set with the rename.
+- `namespace_renames` option: a list of `{from, to}` owner prefixes (`gitea/old-owner/` to `gitea/new-owner/`) applied at start to records, their `repository`, jobs, queries and standing questions. Idempotent; one `rename-namespaces` audit row per move that changed something; a question already under the new namespace keeps that copy.
+- The Supervisor keeps an existing install's option values, so `forge_owner`, `project_links` and `hubs` are set with the rename.
 
 ## 0.6.0
 
 - Records carry optional `anchors`, what the fact is about: `entity:<entity_id>`, `path:<path>`, `host:<address>`, `url:<url>`. Set on `memory_store`, replaced with `memory_update`.
 - Every `anchor_sweep_hours` (default 6) the add-on checks entity anchors against Home Assistant's states (it now has `homeassistant_api`). An anchor that stops resolving files one `contradicts` observation on its record, lowering its effective confidence; one that returns files `corroborates`. Only transitions file evidence. A states read that fails checks nothing.
-- `memory_anchors(kind)`, `memory_anchor_report(id, anchor, state)` and `memory_anchor_sweep()` (also REST under `/api/`), so kinds the add-on cannot see, such as paths on desktop, are checked by a client there. `/health` shows the last sweep. `memory_get` returns each record's anchors, proof and refutation counts and effective confidence.
+- `memory_anchors(kind)`, `memory_anchor_report(id, anchor, state)` and `memory_anchor_sweep()` (also REST under `/api/`), so kinds the add-on cannot see, such as paths on a workstation, are checked by a client there. `/health` shows the last sweep. `memory_get` returns each record's anchors, proof and refutation counts and effective confidence.
 
 ## 0.5.0
 
-- `hubs` names repository namespaces whose sessions work on other repositories. A hub's `memory_search` and the task match in `memory_project_context` also cover every other repository namespace (`reach` in the response), at weight 1.0, below all of the hub's own scopes, so the order among its own hits is unchanged. Bootstrap, open work and procedures stay in scope. Default `gitea/example/ha-management`; the Supervisor applied the default to the existing install on update.
-- Measured with `tools/retrieval-eval/eval.py --hub gitea/example/ha-management` on the frozen 72 queries: targets in other repositories MRR 0.00 to 0.74 (39 queries, misses 39 to 1); targets in the hub's own scopes MRR 0.80 to 0.79, hit@3 0.85 to 0.79. The default per-namespace evaluation is unchanged at 0.83.
+- `hubs` names repository namespaces whose sessions work on other repositories. A hub's `memory_search` and the task match in `memory_project_context` also cover every other repository namespace (`reach` in the response), at weight 1.0, below all of the hub's own scopes, so the order among its own hits is unchanged. Bootstrap, open work and procedures stay in scope. The Supervisor applies a new option's default to an existing install on update.
+- Measured with `tools/retrieval-eval/eval.py --hub <namespace>` on the frozen 72 queries: targets in other repositories MRR 0.00 to 0.74 (39 queries, misses 39 to 1); targets in the hub's own scopes MRR 0.80 to 0.79, hit@3 0.85 to 0.79. The default per-namespace evaluation is unchanged at 0.83.
 
 ## 0.4.3
 

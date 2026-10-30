@@ -1,6 +1,6 @@
-"""Namespaces from git remotes. A remote on GitHub under the configured owner or on the
-personal forge under its owner becomes a repository namespace; anything else is refused
-rather than mapped, so a fork or another owner never inherits the owner's memory."""
+"""Namespaces from git remotes. A remote on GitHub, or on one of the configured forge hosts,
+becomes a repository namespace under its own owner. A configured owner narrows that host to
+the owner's repositories; any other remote is refused rather than mapped."""
 
 from __future__ import annotations
 
@@ -11,8 +11,9 @@ SCP_RE = re.compile(r"^(?:[\w.-]+@)?(?P<host>[\w.-]+):(?P<path>[^:]+)$")
 
 
 def normalize_remote(url: str, github_owner: str, forge_owner: str, forge_hosts: tuple[str, ...]) -> str | None:
-    """`git@github.com:heidrickla/homelab.git` and its https/ssh forms -> github/heidrickla/homelab;
-    `ssh://forge.example/heidrickla/ha-loops.git` -> gitea/heidrickla/ha-loops. None when it is not ours."""
+    """`git@github.com:octo/tools.git` and its https/ssh forms -> github/octo/tools;
+    `ssh://forge.example/octo/tools.git`, with forge.example in `forge_hosts` -> gitea/octo/tools.
+    An empty owner accepts every owner on that host. None when the remote is not one of these."""
     url = url.strip()
     if not url:
         return None
@@ -35,10 +36,14 @@ def normalize_remote(url: str, github_owner: str, forge_owner: str, forge_hosts:
     owner, repo = segments
     if not re.fullmatch(r"[\w.-]+", repo) or not re.fullmatch(r"[\w.-]+", owner):
         return None
-    if host in ("github.com", "www.github.com") and owner.lower() == github_owner.lower():
-        return f"github/{github_owner}/{repo}"
-    if host in forge_hosts and owner.lower() == forge_owner.lower():
-        return f"gitea/{forge_owner}/{repo}"
+    if host in ("github.com", "www.github.com"):
+        if not github_owner:
+            return f"github/{owner}/{repo}"
+        return f"github/{github_owner}/{repo}" if owner.lower() == github_owner.lower() else None
+    if host in forge_hosts:
+        if not forge_owner:
+            return f"gitea/{owner}/{repo}"
+        return f"gitea/{forge_owner}/{repo}" if owner.lower() == forge_owner.lower() else None
     return None
 
 

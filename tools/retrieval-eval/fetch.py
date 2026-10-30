@@ -1,16 +1,16 @@
 """Fetch every live record in full from the memory service's get route (which logs nothing) into
 records.json, for an offline retrieval evaluation.
 
-    python fetch.py            # as Claude: AGENT_MEMORY_TOKEN_CLAUDE
-    python fetch.py --codex    # as Codex: AGENT_MEMORY_TOKEN_CODEX
+    AGENT_MEMORY_URL=http://<home-assistant-host>:8765 python fetch.py            # as Claude: AGENT_MEMORY_TOKEN_CLAUDE
+    AGENT_MEMORY_URL=http://<home-assistant-host>:8765 python fetch.py --codex    # as Codex: AGENT_MEMORY_TOKEN_CODEX
 
 The token is read from the process environment, then on Windows from the user environment
 (HKCU\\Environment), and sent as a bearer token; without one the service identifies the caller by
 address. A token the service refuses stops the fetch. The value is never printed.
 
-The frozen queries target the 2026-09-24 snapshot, whose records still carry the `gitea/example/`
-namespaces from before the owner rename. The live store holds them under `gitea/heidrickla/`, so a
-fresh snapshot needs a fresh query set. An existing records.json is never overwritten.
+The frozen queries target the 2026-09-24 snapshot, whose records carry the namespaces from before
+an owner rename; the live store holds them under `gitea/heidrickla/`, so a fresh snapshot needs a
+fresh query set. An existing records.json is never overwritten.
 """
 
 import json
@@ -21,7 +21,9 @@ import urllib.error
 import urllib.request
 
 HERE = pathlib.Path(__file__).parent
-BASE = "http://192.0.2.10:8765/api"
+BASE = os.environ.get("AGENT_MEMORY_URL", "").rstrip("/") + "/api"
+if BASE == "/api":
+    sys.exit("set AGENT_MEMORY_URL to the service, http://<home-assistant-host>:8765")
 VARIABLE = "AGENT_MEMORY_TOKEN_CODEX" if "--codex" in sys.argv else "AGENT_MEMORY_TOKEN_CLAUDE"
 NAMESPACES = [
     "gitea/heidrickla/ability-per-turn",

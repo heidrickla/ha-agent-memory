@@ -139,8 +139,8 @@ class Ollama:
         return (doc.get("message") or {}).get("content", "")
 
 
-# Output caps: the server is shared with voice and failover traffic, so a runaway reply must not hold a
-# slot for minutes. Measured Bonsai extractions run about 400 tokens; answers are cut to ANSWER_CHARS anyway.
+# Output caps: the model server may be shared with other traffic, so a runaway reply must not hold a
+# slot for minutes. Measured extractions run about 400 tokens; answers are cut to ANSWER_CHARS anyway.
 EXTRACT_TOKENS = 2048
 ANSWER_TOKENS = 512
 
@@ -242,13 +242,13 @@ PROBE_S = 15.0
 
 
 class Pool:
-    """Model servers in preference order, routed like a load balancer (the owner, 2026-10-02): a probe no call
+    """Model servers in preference order, routed like a load balancer: a probe no call
     waits on keeps each server's live state, and each call goes to the live server with the fewest calls
     in flight, the earlier one on a tie. A call that cannot reach its server marks it down until the next
     probe and moves to the next live one. A server not yet probed counts as live.
 
-    `tiers` gives each server a tier: a call uses the lowest tier with a live server, so the Mission
-    Bridge's router (tier 0) is asked while it answers and the hosts direct (tier 1) only while it does not."""
+    `tiers` gives each server a tier: a call uses the lowest tier with a live server, so a router in
+    front of the hosts (tier 0) is asked while it answers and the hosts direct (tier 1) only while it does not."""
 
     def __init__(self, clients: list, probe_s: float = PROBE_S, tiers: list[int] | None = None):
         self.clients = list(clients)

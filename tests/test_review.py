@@ -35,7 +35,7 @@ class FakeJudge:
     """The worker's client: `judge` returns what `script(candidate_title, user_text)` gives."""
 
     api = "openai"
-    model = "bonsai2-memory"
+    model = "memory-model"
     base = "http://fake/v1"
 
     def __init__(self, script, up: bool = True):
@@ -101,7 +101,7 @@ def test_a_duplicate_of_an_active_record_is_forgotten_with_its_reason(tmp_path):
     out = app.reviewer.run()
     assert status(app, c) == "deleted" and out["forgotten"] == {"duplicate": 1, "session-state": 0} and out["kept"] == 0
     row = app.store.db.execute("select client, action, detail from audit where record_id=? and action='forget'", (c,)).fetchone()
-    assert row["client"] == "review" and row["detail"].startswith(f"review-v1 duplicate of {held[:8]}, model bonsai2-memory at http://fake/v1: same fact")
+    assert row["client"] == "review" and row["detail"].startswith(f"review-v1 duplicate of {held[:8]}, model memory-model at http://fake/v1: same fact")
     assert c not in {r["record_id"] for r in app.store.db.execute("select record_id from embeddings")}
 
 
@@ -219,7 +219,7 @@ def extracted_candidate(app, title: str, at: str) -> str:
 
 
 def test_an_extracted_candidate_past_the_expiry_is_forgotten_before_the_verdicts(tmp_path):
-    """No session promoted any of the 24 extracted candidates reviewed on 2026-10-21 (the owner chose a 14-day expiry)."""
+    """No session promoted any of the 24 extracted candidates reviewed on 2026-10-21."""
     app = app_with(tmp_path, lambda title, user: verdict("keep"))
     old = extracted_candidate(app, "Old extract", days_ago(15))
     young = extracted_candidate(app, "Young extract", days_ago(13))
@@ -320,7 +320,7 @@ def test_the_openai_judge_request_carries_the_review_schema_with_thinking_off():
     threading.Thread(target=server.serve_forever, daemon=True).start()
     FakeV1.seen = []
     try:
-        client = OpenAIChat(f"http://127.0.0.1:{server.server_address[1]}/v1", "bonsai2-memory")
+        client = OpenAIChat(f"http://127.0.0.1:{server.server_address[1]}/v1", "memory-model")
         assert json.loads(client.judge("sys", "user", review.SCHEMA, review.REVIEW_TOKENS))["verdict"] == "keep"
         body = FakeV1.seen[0]
         assert body["response_format"]["json_schema"]["schema"] == review.SCHEMA and body["max_tokens"] == review.REVIEW_TOKENS

@@ -1,67 +1,85 @@
 configuration:
   clients:
     name: Clients
-    description: Who may call. A client with token_sha256 authenticates by bearer token and is recorded as the writer of what it stores; one with ip only, by source address, and reads only. Scopes are read, write, delete, export, admin.
+    description: Who may call. A client listed by name alone gets a token the add-on generates and shows once in its log; remove it and add it back for a new one. token_sha256 is a token made elsewhere; ip alone reads by source address.
+    fields:
+      name:
+        name: Name
+        description: The client's name, recorded as the writer of what it stores.
+      ip:
+        name: Address
+        description: Optional. A source address that may read without a token.
+      token_sha256:
+        name: Token hash
+        description: Optional. The sha256 of a token made elsewhere. Leave it and ip empty for a generated token.
+      scopes:
+        name: Scopes
+        description: read, write, delete, export or admin.
   github_owner:
     name: GitHub owner
-    description: Remotes under this GitHub owner become github/<owner>/<repo> namespaces.
+    description: Optional. When set, only GitHub remotes under this owner become github/<owner>/<repo> namespaces; unset, every owner's do.
   forge_owner:
     name: Forge owner
-    description: Remotes under this owner on the forge hosts become gitea/<owner>/<repo> namespaces.
+    description: Optional. When set, only remotes under this owner on the forge hosts become gitea/<owner>/<repo> namespaces; unset, every owner's do.
   forge_hosts:
     name: Forge hosts
-    description: Host names and addresses of the personal forge.
+    description: Optional. Host names and addresses of a Gitea or Forgejo server whose remotes become gitea/<owner>/<repo> namespaces. Empty means none.
   project_links:
     name: Project links
-    description: Repository namespaces that share a projects/<name> scope.
+    description: Repository namespaces that share a projects/<name> scope. Empty by default.
+  namespace_renames:
+    name: Namespace renames
+    description: Owner prefixes moved at start after an owner rename, each from and to like gitea/old-owner/ and gitea/new-owner/. A rerun moves nothing. Empty by default.
   anchor_sweep_hours:
     name: Anchor sweep interval (hours)
-    description: How often entity anchors are checked against Home Assistant. A record whose entity is gone gets one contradicting observation, and one corroborating when it returns.
+    description: How often entity anchors are checked against Home Assistant, 1 to 168; default 6. A record whose entity is gone gets one contradicting observation, and one corroborating when it returns.
   review_at:
     name: Candidate review time
-    description: Local time (HH:MM) of the nightly review, in which the enrichment model forgets candidates that repeat a record their namespace already reaches or report only what one session did. Everything else waits for an agent. Absent means 03:00; off turns it off.
+    description: Local time (HH:MM) of the nightly review, in which the enrichment model forgets candidates that repeat a record their namespace reaches or report only what one session did; the rest wait for an agent. Default 03:00; off turns it off.
   candidate_expiry_days:
     name: Extracted candidate expiry
-    description: Days an extracted candidate may wait for an agent's review. The nightly review forgets one still pending after that, recoverable until retention_deleted_days. Candidates an agent stored never expire. 0 turns it off.
+    description: Days an extracted candidate may wait for an agent's review; default 14. The nightly review forgets one still pending after that, recoverable until retention_deleted_days. Candidates an agent stored never expire. 0 turns it off.
   summary_candidates:
     name: Keep session summaries as candidates
-    description: Store each session's closing summary as a candidate for review. Off, a close queues extraction from the session's notes, which hold the summary, and keeps no summary record.
+    description: Store each session's closing summary as a candidate for review. Off, a close queues extraction from the session's notes, which hold the summary, and keeps no summary record. Default off.
   hubs:
     name: Hubs
-    description: Repository namespaces whose search and project_context also cover every other repository namespace, ranked below their own scopes. Bootstrap is unchanged.
+    description: Optional. Repository namespaces whose search and project_context also cover every other repository namespace, ranked below their own scopes. Bootstrap is unchanged.
   context_budget_tokens:
     name: Context budget
-    description: Default size of a project context packet, in approximate tokens.
+    description: Default size of a project context packet, in approximate tokens, 500 to 8000; default 4000.
   hard_context_limit_tokens:
     name: Hard context limit
-    description: No packet exceeds this.
+    description: No packet exceeds this, 1000 to 16000; default 8000.
   retention_deleted_days:
     name: Retention of forgotten records
-    description: Soft-deleted records are purged after this many days.
+    description: Soft-deleted records and recorded queries are purged after this many days, 1 to 365; default 30.
   ollama_url:
     name: Model server URL
     description: Optional. Ollama (http://host:11434) or an OpenAI-style server when the URL ends in /v1 (http://host:8080/v1). With it set, session_close with notes queues extraction and the worker stores candidates.
   ollama_fallback_url:
     name: Fallback model server URL
-    description: A second server with the same models. Each call goes to whichever of the two answered its last health probe and has the fewest calls in flight, ollama_url first on a tie.
+    description: Optional. A second server with the same models. Each call goes to whichever of the two answered its last health probe and has the fewest calls in flight, ollama_url first on a tie.
   ollama_direct_urls:
     name: Direct model server URLs
-    description: The model hosts themselves, asked only while ollama_url and ollama_fallback_url have no live server (the Voice Bridge's router down). Each call goes to the live one with the fewest calls in flight.
+    description: Optional. The model hosts themselves, asked only while ollama_url and ollama_fallback_url have no live server, for example while a router in front of them is down. Each call goes to the live one with the fewest calls in flight.
   ollama_model:
     name: Model
-    description: Default model for every job kind, and the last model tried in each chain.
+    description: Default model for every job kind, and the last model tried in each chain; default qwen3.5:9b.
   ollama_models:
     name: Models per job kind
-    description: Entries "<kind>:<model>", most preferred first, kinds extract and answer, e.g. extract:qwen3.5:9b. A failed model costs the next one.
+    description: Optional. Entries "<kind>:<model>", most preferred first, kinds extract and answer, e.g. extract:qwen3.5:9b. A failed model costs the next one.
   ollama_timeout_s:
     name: Model call timeout (s)
-    description: One model call's limit.
+    description: One model call's limit, 10 to 900; default 120.
   embed_url:
     name: Encoder URL
     description: Optional. An OpenAI-style /v1 base URL serving embeddings (http://host:8080/v1). With it set, search ranks by embedding similarity whenever the encoder answers and falls back to full-text search when it does not. Absent means off.
   embed_model:
     name: Encoder model
-    description: The embedding model's name on that server.
+    description: The embedding model's name on that server; default qwen3-emb-0.6b.
   embed_timeout_s:
     name: Query embedding timeout (s)
-    description: How long a search waits for its query's vector before answering from full-text search.
+    description: How long a search waits for its query's vector before answering from full-text search, 0.2 to 30; default 2.
+network:
+  8765/tcp: MCP and REST for agents on the LAN

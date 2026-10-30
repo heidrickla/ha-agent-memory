@@ -21,6 +21,8 @@ import hmac
 import json
 import logging
 import os
+import re
+import secrets
 import sys
 import threading
 import time
@@ -61,6 +63,53 @@ def load_options(path: str) -> dict:
     with open(path, encoding="utf-8") as fh:
         doc = json.load(fh)
     return doc if isinstance(doc, dict) else {}
+
+
+def issue_tokens(clients: list[dict], path: str) -> tuple[list[dict], dict[str, str]]:
+    """Clients listed by name alone get a token the add-on generates: (the clients with each hash filled in,
+    the tokens generated now). Only hashes are kept in `path`; a name dropped from the options loses its token,
+    so removing a client and adding it back issues a new one."""
+    try:
+        with open(path, encoding="utf-8") as fh:
+            kept = json.load(fh)
+    except FileNotFoundError:
+        kept = {}
+    named = {c["name"] for c in clients if not c.get("ip") and not c.get("token_sha256")}
+    hashes = {n: h for n, h in kept.items() if n in named and isinstance(h, str)}
+    issued: dict[str, str] = {}
+    for name in sorted(named - hashes.keys()):
+        issued[name] = secrets.token_urlsafe(32)
+        hashes[name] = hashlib.sha256(issued[name].encode()).hexdigest()
+    if hashes != kept:
+        tmp = path + ".tmp"
+        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            json.dump(hashes, fh)
+        os.replace(tmp, path)
+    filled = [{**c, "token_sha256": hashes[c["name"]]} if c["name"] in named else c for c in clients]
+    return filled, issued
+
+
+def forwarded_host(header: str | None) -> str:
+    """The host name in an `X-Forwarded-Host` value, without its port; empty when it is not a plain host name or address."""
+    host = (header or "").split(",")[0].strip()
+    host = host[1 : host.index("]")] if host.startswith("[") and "]" in host else host.rsplit(":", 1)[0] if host.count(":") == 1 else host
+    return host if re.fullmatch(r"[A-Za-z0-9.-]{1,253}|[0-9A-Fa-f:]{2,39}", host) else ""
+
+
+def mcp_url(host: str = "") -> str:
+    if ":" in host:
+        host = f"[{host}]"
+    return f"http://{host or '<home-assistant-host>'}:8765/mcp"
+
+
+def token_notice(name: str, token: str) -> list[str]:
+    """The log lines that show a generated token once, with what each agent needs to use it."""
+    return [
+        f"client {name!r}: new token, shown once: {token}",
+        f"  Claude Code: claude mcp add --scope user --transport http agent-memory {mcp_url()} --header 'Authorization: Bearer {token}'",
+        f'  Codex: set AGENT_MEMORY_TOKEN to the token, then in ~/.codex/config.toml [mcp_servers.agent_memory] set url = "{mcp_url()}" and bearer_token_env_var = "AGENT_MEMORY_TOKEN"',
+    ]
 
 
 class Auth:
@@ -118,7 +167,10 @@ class App:
             LOG.info("namespace rename %s -> %s: %s", rename["from"], rename["to"], moved)
         self.memory = mcp.Memory(self.store, options)
         self.memory.entity_ids = ha_entity_ids
-        self.auth = Auth(options.get("clients") or [])
+        listed = options.get("clients") or []
+        clients, self.issued = issue_tokens(listed, os.path.join(data_dir, "client_tokens.json"))
+        self.generated = [c["name"] for c in listed if not c.get("ip") and not c.get("token_sha256")]
+        self.auth = Auth(clients)
         self.export_dir = os.path.join(data_dir, "exports")
         self.worker = enrich.Worker(self.store, options)
         # Embedding retrieval, when embed_url is set; search falls back to FTS whenever it cannot use it.
@@ -136,6 +188,7 @@ class App:
         queue = self.store.queue_depth()
         enrichment = self.worker.state()
         return {
+            "version": mcp.VERSION,
             "status": "degraded" if (queue["queued"] and enrichment["ollama"] != "available") else "ok",
             "uptime_s": int(time.time() - self.started),
             "records": stats["memories"],
@@ -158,15 +211,22 @@ class App:
         rows = self.store.db.execute("select * from audit order by seq desc limit ?", (n,)).fetchall()
         return [dict(r) for r in rows]
 
-    def panel_data(self) -> dict:
+    def client_rows(self) -> list[dict]:
+        """How each client authenticates, for the page: never a hash or a token."""
+        generated = set(self.generated)
+        return [{"name": c.get("name"), "by": "generated token" if c.get("name") in generated else "token" if c.get("token_sha256") else "address"} for c in self.auth.clients]
+
+    def panel_data(self, host: str = "") -> dict:
+        """`host` is the name the browser used for Home Assistant, from the ingress proxy's forwarded headers."""
         now = dt.datetime.now(dt.UTC)
         since = (now - dt.timedelta(hours=24)).isoformat(timespec="seconds")
-        return {"now": now, "health": self.health(), "counts": self.store.panel_counts(since), "audit": self.audit_tail(), "unused": self.store.unused()}
+        connect = {"url": mcp_url(host), "clients": self.client_rows()}
+        return {"now": now, "health": self.health(), "counts": self.store.panel_counts(since), "audit": self.audit_tail(), "unused": self.store.unused(), "connect": connect}
 
 
 def make_handler(app: App):
     class Handler(BaseHTTPRequestHandler):
-        server_version = "agent-memory/0.1"
+        server_version = f"agent-memory/{mcp.VERSION}"
         _length = 0  # the POST body length, set by _refusal
 
         def log_message(self, fmt, *args):
@@ -233,7 +293,7 @@ def make_handler(app: App):
                 if not self._ingress():
                     self._send(404, b"not found\n", "text/plain; charset=utf-8")
                     return
-                self._send(200, page.render(app.panel_data()).encode(), "text/html; charset=utf-8")
+                self._send(200, page.render(app.panel_data(forwarded_host(self.headers.get("X-Forwarded-Host")))).encode(), "text/html; charset=utf-8")
             elif path == "/mcp":
                 self._send(405, b"", extra={"Allow": "POST"})
             elif path.startswith("/api/"):
@@ -382,7 +442,12 @@ def main(argv: list[str] | None = None) -> int:
     if app.indexer:
         threading.Thread(target=app.indexer.loop, args=(stop,), name="embeddings", daemon=True).start()
     embedding = f"{app.encoder.model} at {app.encoder.base}" if app.encoder else "off"
-    LOG.info("serving on :%d, fts5 %s, %d clients, %d records, embeddings %s", args.port, app.store.fts, len(app.auth.clients), app.store.stats()["memories"], embedding)
+    LOG.info("agent-memory %s serving on :%d, fts5 %s, %d clients, %d records, embeddings %s", mcp.VERSION, args.port, app.store.fts, len(app.auth.clients), app.store.stats()["memories"], embedding)
+    for name, token in app.issued.items():
+        for line in token_notice(name, token):
+            LOG.info("%s", line)
+    if not app.auth.clients:
+        LOG.warning("no clients are configured: add one to the clients option by name, and the add-on generates its token at the next start")
     try:
         while True:
             time.sleep(3600)

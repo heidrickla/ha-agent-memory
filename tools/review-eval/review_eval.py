@@ -1,6 +1,6 @@
 """The nightly candidate review scored against the reviews agents already made.
 
-  python review_eval.py <checkout> <memory.sqlite> [--llm URL] [--model NAME] [--embed-url URL] [--out FILE] [-v]
+  python review_eval.py <checkout> <memory.sqlite> --llm URL --model NAME --embed-url URL [--out FILE] [-v]
 
 Method, fixed before any result (2026-10-02):
 
@@ -30,9 +30,9 @@ import yaml
 ap = argparse.ArgumentParser()
 ap.add_argument("checkout")
 ap.add_argument("db")
-ap.add_argument("--llm", default="http://192.0.2.20:8080/v1")
-ap.add_argument("--model", default="bonsai2-memory")
-ap.add_argument("--embed-url", default="http://192.0.2.20:8080/v1")
+ap.add_argument("--llm", required=True, help="OpenAI-style /v1 base URL of the review model")
+ap.add_argument("--model", required=True)
+ap.add_argument("--embed-url", required=True, help="OpenAI-style /v1 base URL of the encoder")
 ap.add_argument("--out")
 ap.add_argument("-v", action="store_true")
 args = ap.parse_args()

@@ -1,6 +1,6 @@
 """Nightly candidate review: the enrichment model forgets the candidates an agent would forget on sight.
 
-Forget only (the owner, 2026-10-02): a candidate is forgotten when a record its namespace can already reach
+Forget only: a candidate is forgotten when a record its namespace can already reach
 states every fact in it, or when it records only what one session did. Every other candidate waits for
 the agent review at session start; nothing is promoted here. Measured before it ran against the
 candidates agents had already reviewed: `tools/review-eval/`.
@@ -14,8 +14,8 @@ candidates agents had already reviewed: `tools/review-eval/`.
 | the forget applies only while the record is a candidate at the revision the model read | an edit or a promotion during the call keeps it |
 | a reply that will not parse costs the next model in the chain; a failed candidate is kept | the next run tries it again |
 | one run at a time | a run requested during another waits for it |
-| one worker per live model server, at least two | the candidates are split between desktop and rack: by the Voice Bridge's router, or by `enrich.Pool` when the hosts are asked direct |
-| an extracted candidate pending `candidate_expiry_days` after it was written is forgotten, live model or not | no session promoted it; an agent's candidates never expire (the owner, 2026-10-21) |
+| one worker per live model server, at least two | the candidates are split between the model hosts: by a router in front of them, or by `enrich.Pool` when the hosts are asked direct |
+| an extracted candidate pending `candidate_expiry_days` after it was written is forgotten, live model or not | no session promoted it; an agent's candidates never expire |
 """
 
 from __future__ import annotations

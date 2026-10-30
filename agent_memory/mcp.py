@@ -19,6 +19,7 @@ from filters import DO_NOT_STORE, redact, screen
 from namespaces import MAX_NAMESPACE, is_repository, normalize_remote, scopes_for, valid_namespace
 from store import TYPES, UPDATABLE, Conflict, Refused, Rejected, Store, now_iso, tokens
 
+VERSION = "0.20.0"  # the add-on version; config.yaml and pyproject.toml carry the same, checked by a test
 PROTOCOL = "2025-06-18"
 BUDGETS = {"bootstrap": 500, "search": 750, "records": 2000, "packet": 4000}
 TIMELINE_STATUSES = ("active", "candidate", "superseded")
@@ -132,7 +133,7 @@ class Memory:
 
     # ------------------------------------------------------------ tools
     def namespace(self, remote_url: str) -> dict:
-        ns = normalize_remote(remote_url, self.o.get("github_owner") or "heidrickla", self.o.get("forge_owner") or "heidrickla", tuple(self.o.get("forge_hosts") or ["forge.example", "192.0.2.20"]))
+        ns = normalize_remote(remote_url, self.o.get("github_owner") or "", self.o.get("forge_owner") or "", tuple(h.lower() for h in self.o.get("forge_hosts") or () if h))
         return {"namespace": ns, "accepted": ns is not None, "scopes": self.scopes(ns) if ns else []}
 
     def bootstrap(self, namespace: str, topics: list[str] | None = None, wire: Callable[[dict], int] = serialized_bytes) -> dict:
@@ -775,7 +776,7 @@ def jsonrpc(mem: Memory, msg: dict, client: str, allowed_scopes: set[str], expor
         return {
             "jsonrpc": "2.0",
             "id": mid,
-            "result": {"protocolVersion": params.get("protocolVersion") or PROTOCOL, "capabilities": {"tools": {"listChanged": False}}, "serverInfo": {"name": "agent-memory", "version": "0.1.0"}},
+            "result": {"protocolVersion": params.get("protocolVersion") or PROTOCOL, "capabilities": {"tools": {"listChanged": False}}, "serverInfo": {"name": "agent-memory", "version": VERSION}},
         }
     if method == "ping":
         return {"jsonrpc": "2.0", "id": mid, "result": {}}

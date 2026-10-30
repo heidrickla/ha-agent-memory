@@ -1,16 +1,13 @@
 name: Agent Memory
-version: "0.19.2"
+version: "0.20.0"
 slug: agent_memory
-description: Shared, bounded context for Claude Code and Codex over MCP; SQLite and FTS5, no paid model in the path
+description: Shared, bounded memory for coding agents over MCP; SQLite and FTS5, no paid model in the path
 url: https://github.com/heidrickla/ha-agent-memory
 arch:
   - amd64
   - aarch64
 startup: services
-boot: auto
 init: false
-stage: stable
-advanced: false
 ports:
   8765/tcp: 8765
 ports_description:
@@ -20,44 +17,22 @@ homeassistant_api: true
 ingress_port: 8765
 panel_icon: mdi:brain
 panel_title: Memory
-watchdog: http://[HOST]:[PORT:8765]/healthz
+# A client listed by name alone gets a token the add-on generates at start and logs once.
+# Every other option is optional; its default is in the code and in translations/en.yaml.
 options:
   clients:
-    - name: desktop
-      ip: 192.0.2.2
+    - name: claude-code
       scopes:
         - read
-  github_owner: heidrickla
-  forge_owner: heidrickla
-  forge_hosts:
-    - forge.example
-    - 192.0.2.20
-  project_links:
-    - project: homelab
-      namespaces:
-        - gitea/heidrickla/ha-management
-        - gitea/heidrickla/voice-app
-        - gitea/heidrickla/ha-loops
-        - gitea/heidrickla/ha-agent-memory
-        - gitea/heidrickla/tools-server
-    - project: research
-      namespaces:
-        - gitea/heidrickla/ai-research
-        - gitea/heidrickla/ha-agent-harness-performance-tracker
-  hubs:
-    - gitea/heidrickla/ha-management
+        - write
+        - delete
+    - name: codex
+      scopes:
+        - read
+        - write
+        - delete
+  project_links: []
   namespace_renames: []
-  anchor_sweep_hours: 6
-  review_at: "03:00"
-  summary_candidates: false
-  candidate_expiry_days: 14
-  context_budget_tokens: 4000
-  hard_context_limit_tokens: 8000
-  retention_deleted_days: 30
-  ollama_model: qwen3.5:9b
-  ollama_timeout_s: 120
-  embed_model: qwen3-emb-0.6b
-  embed_timeout_s: 2
 schema:
   clients:
     - name: str
@@ -65,10 +40,10 @@ schema:
       token_sha256: str?
       scopes:
         - list(read|write|delete|export|admin)
-  github_owner: str
-  forge_owner: str
+  github_owner: str?
+  forge_owner: str?
   forge_hosts:
-    - str
+    - str?
   project_links:
     - project: str
       namespaces:
@@ -78,13 +53,13 @@ schema:
   namespace_renames:
     - from: match(^(github|gitea)/[\w.-]+/$)
       to: match(^(github|gitea)/[\w.-]+/$)
-  anchor_sweep_hours: int(1,168)
+  anchor_sweep_hours: int(1,168)?
   review_at: match(^(off|([01][0-9]|2[0-3]):[0-5][0-9])$)?
   summary_candidates: bool?
   candidate_expiry_days: int(0,365)?
-  context_budget_tokens: int(500,8000)
-  hard_context_limit_tokens: int(1000,16000)
-  retention_deleted_days: int(1,365)
+  context_budget_tokens: int(500,8000)?
+  hard_context_limit_tokens: int(1000,16000)?
+  retention_deleted_days: int(1,365)?
   ollama_url: url?
   ollama_fallback_url: url?
   ollama_direct_urls:

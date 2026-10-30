@@ -24,10 +24,10 @@ HEALTH = {
     "enrichment": {
         "configured": True,
         "api": "openai",
-        "model": "bonsai2-memory",
+        "model": "memory-model",
         "ollama": "available",
         "servers": [
-            {"url": "http://local-voice-bridge:8789/v1", "tier": 0, "live": True, "in_flight": 0},
+            {"url": "http://router.example:8789/v1", "tier": 0, "live": True, "in_flight": 0},
             {"url": "http://192.0.2.2:8080/v1", "tier": 1, "live": True, "in_flight": 1},
             {"url": "http://192.0.2.20:8080/v1", "tier": 1, "live": False, "in_flight": 0},
         ],
@@ -47,7 +47,7 @@ HEALTH = {
         "forgotten": {"duplicate": 1, "session-state": 0},
         "kept": 3,
         "failed": 0,
-        "servers": {"http://local-voice-bridge:8789/v1": 4},
+        "servers": {"http://router.example:8789/v1": 4},
         "error": None,
         "seconds": 9.9,
         "review_at": "03:00",

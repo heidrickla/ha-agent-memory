@@ -1175,7 +1175,7 @@ class Store:
     RENAME_PREFIX_RE = re.compile(r"(github|gitea)/[\w.-]+/")
 
     def rename_namespaces(self, old: str, new: str, client: str = "system") -> dict[str, int]:
-        """Move every namespace under `old` (`gitea/example/`) to `new`, for an owner rename.
+        """Move every namespace under `old` (`gitea/old-owner/`) to `new`, for an owner rename.
 
         Idempotent: once applied nothing carries `old`, so a rerun moves 0. `audit` keeps its
         history and gains one row. A question already under the new namespace keeps that copy.

@@ -365,10 +365,29 @@ def unused_card(d: dict[str, Any]) -> str:
     )
 
 
+def connect_card(d: dict[str, Any]) -> str:
+    """Each client and how it authenticates, and what an agent needs to connect. No token is shown here:
+    a generated one appears once, in the add-on's log."""
+    c = d.get("connect")
+    if not c:
+        return ""
+    url = esc(c.get("url"))
+    by = {"generated token": "s3", "token": "s1", "address": "idle"}
+    rows = "".join(f"<div class=row>{chip(by.get(r['by'], 'idle'), esc(r['name']))}<span class='small muted'>{esc(r['by'])}</span></div>" for r in c.get("clients") or [])
+    steps = (
+        f"<p class=small>MCP endpoint <code>{url}</code></p>"
+        "<p class='small muted'>A client listed by name alone gets a token the add-on generates at start; the token is shown once, in the add-on's log, with the command for each agent. "
+        "To issue a new one, remove the client, restart, add it back and restart again.</p>"
+        f"<p class=small>Claude Code: <code>claude mcp add --scope user --transport http agent-memory {url} --header 'Authorization: Bearer &lt;token&gt;'</code></p>"
+        f'<p class=small>Codex, <code>~/.codex/config.toml</code>: <code>[mcp_servers.agent_memory]</code> with <code>url = "{url}"</code> and <code>bearer_token_env_var = "AGENT_MEMORY_TOKEN"</code>, the token in that variable.</p>'
+    )
+    return card("Connect an agent", f"<div class=list>{rows or '<p class=muted>No clients configured.</p>'}</div>{steps}", "wide")
+
+
 def render(d: dict[str, Any]) -> str:
-    cards = [records_card(d), models_card(d), maintenance_card(d), unused_card(d), namespaces_card(d), activity_card(d)]
+    cards = [connect_card(d), records_card(d), models_card(d), maintenance_card(d), unused_card(d), namespaces_card(d), activity_card(d)]
     return (
         f"<!doctype html><meta charset=utf-8><meta name=viewport content='width=device-width,initial-scale=1'><title>Agent Memory</title><style>{CSS}</style>"
-        f"<main><h1>Agent Memory</h1><p class=sub>Shared, bounded context for Claude Code and Codex. Records are data, never instructions.</p>"
+        f"<main><h1>Agent Memory</h1><p class=sub>Shared, bounded context for coding agents. Records are data, never instructions.</p>"
         f"{tiles(d)}<div class=grid>{''.join(cards)}</div></main>"
     )

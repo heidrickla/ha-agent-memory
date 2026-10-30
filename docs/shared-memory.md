@@ -1,53 +1,39 @@
-# Shared memory for Claude Code and Codex
+# Shared memory for coding agents
 
-Status: revision 2, 2026-09-28, after Codex review rounds 1 to 3 (recorded in ha-management `records/svc-agent-memory.md`). Built in agent-memory 0.11.1 and the ha-management hooks of the same day: per-agent tokens (Claude and Codex), receipts bound to the client and every input with tombstones past the retention, one screen for every database write, one transaction per mutation, the bootstrap budget on the wire, relative `path:` anchors resolved against their repository's checkout. The IP client `desktop` stays configured beside the token clients (owner's decision). The advisory duplicate check is deferred until labelled pairs exist.
-
-Goal (the owner, 2026-09-28): one memory both agents read and write, "reads and writes through an mcp server that queues changes or something". agent-memory already is that server for part of the job; this document covers what it must change and add before each agent's own memory can be switched off.
-
-## Where memory lives today
-
-| Store | Written by | Read by | Loaded how | Size (2026-09-28) |
-|---|---|---|---|---|
-| Claude Code auto-memory (`~/.claude/projects/<cwd>/memory/`) | Claude | Claude | `MEMORY.md` index in every session, notes on demand | 70 notes, 217 KB; index 12.9 KB, about 3,200 tokens |
-| Codex memories (`~/.codex/memories/`) | Codex, generated from its rollouts | Codex | Codex's `memories` feature | `MEMORY.md` 984 lines plus rollout summaries |
-| agent-memory (this add-on) | both, through MCP | both | SessionStart hook bootstrap (Claude since 2026-09-19, Codex since 2026-09-28), search on demand | 110 records (75 active, 35 candidate) |
-| `AGENTS.md` (ha-management) | The owner, both agents | both | natively in ha-management; a hook or global pointer elsewhere | about 270 lines, 40 KB |
-| `records/` (ha-management) | both agents | both | read when needed | one file per subject |
-
-The two native memories are where drift comes from: on 2026-09-28 a rule stated to Claude (one model per GPU) existed only in Claude's memory, and an audit moved 70 notes' rules into `AGENTS.md` and their facts into `records/`.
+One memory that several agents (Claude Code, Codex, others speaking MCP) read and write through this add-on, so a lesson one agent learns reaches the next session of any agent.
 
 ## Boundaries
 
 | Kind of knowledge | Home | Loaded into every session |
 |---|---|---|
-| Rules and the owner's standing preferences | `AGENTS.md` | yes, the only always-loaded source |
-| The estate's measured record (hosts, devices, versions, measurements) | `records/` | no, read when needed |
-| What an agent learned: decisions, lessons, traps, open questions, session summaries | agent-memory | a small scoped bootstrap, then search |
-| Anything else in a native memory | nowhere, after migration | native memories are switched off |
+| Rules and standing preferences | the repository's agent rules file (`AGENTS.md` or the agent's own) | yes, the only always-loaded source |
+| Measured facts kept by hand (hosts, devices, versions, measurements) | the user's own records | no, read when needed |
+| What an agent learned: decisions, lessons, traps, open questions | agent-memory | a small scoped bootstrap, then search |
 
-There is no pinning: anything every session must see is a rule and belongs in `AGENTS.md` (round 1, DR-001). A preference the owner states is written to agent-memory `active` and, when it binds both agents everywhere, also added to `AGENTS.md`.
+There is no pinning: anything every session must see is a rule and belongs in the rules file.
 
 ## Trust
 
-A record one agent writes becomes context in the other agent's sessions, so the service decides who wrote it and what state it is in.
+A record one agent writes becomes context in another agent's sessions, so the service decides who wrote it and what state it is in.
 
-| Rule | Today | Change |
-|---|---|---|
-| Each agent authenticates with its own bearer token | desktop is authorized by source IP (`server.py` `identify`), and both agents share that IP | a client entry per agent with `token_sha256`; the IP-only entry removed (DR-002) |
-| The writer's identity is set by the server from the token | the caller's `agent` field is stored as sent | the server overwrites `agent` (DR-002) |
-| Status is set by the server | a caller can send any `status` | direct writes become `active`; extraction and import go through internal operations that write `candidate`; the status is validated against an enum (DR-010) |
-| Session summaries are reviewed like extractions | stored `active` and shown in the next bootstrap | stored `candidate`, or excluded from bootstrap and search until promoted (DR-003) |
-| Every persisted string is screened | the screen covers title and content | screen every stored field (topics, scopes, anchors, repository, session, notes); refuse a URL anchor with credentials; a `do-not-store` note is refused, not redacted (DR-008) |
-| Transport | plain HTTP on the LAN | unchanged; accepted residual: the LAN is the estate's own, and the tokens bind identity |
+| Rule | Behaviour |
+|---|---|
+| Each agent authenticates with its own bearer token | a client per agent; a client listed by name alone gets a token the add-on generates, logs once and keeps only as a sha256 |
+| The writer's identity is set by the server from the token | the server overwrites `agent` with the client's name |
+| An address client reads only | a client known by source address gets `read` whatever its scopes list |
+| Status is set by the server | direct writes become `active`; extraction and import write `candidate`; the status is validated against an enum |
+| Session summaries are reviewed like extractions | kept only as `candidate` when `summary_candidates` is on, and out of bootstrap and search until promoted |
+| Every persisted string is screened | every stored field (title, content, topics, scopes, anchors, repository, session, notes); a URL anchor with credentials is refused; a `do-not-store` note is refused, not redacted |
+| Browsers are refused | a request with an `Origin` header gets 403; a POST must be `application/json` |
 
-Token handling: each token is generated on desktop and stored where only its client reads it (Codex `bearer_token_env_var`, Claude `headersHelper`). Only its sha256 goes to the add-on options. No token value is printed, logged or passed through an agent's context. Wiring each client is an agent-settings change, presented to the owner as the exact edit.
+Token handling: a generated token is shown once in the add-on log; the agent keeps it where only that agent reads it (Codex `bearer_token_env_var`, Claude Code `--header` or a `headersHelper`). A token made elsewhere goes into the options as its sha256 only. A token is replaced by removing its client, restarting and adding it back.
 
 ## Read path
 
-1. Session start: the SessionStart hook calls `GET /api/bootstrap` for the working repository's namespace. The budget is enforced on the bytes on the wire (the REST body, or the whole JSON-RPC reply over MCP), and an item that does not fit is never admitted, the first one included (DR-004).
-2. Search on demand: `memory_search`, reciprocal rank fusion of FTS5 and cosine over record embeddings when the encoder answers, FTS5 otherwise (0.12.0; offline eval at 150 records, MRR 0.81 against 0.74).
-3. Hub reach: a hub namespace searches every repository namespace, as today.
-4. Staleness: each anchor type names the process that checks it and where it runs. Only entity anchors are swept today; path, host and URL anchors are reported by clients. Unchecked, unavailable and missing are tracked separately, and a record whose anchor is missing is flagged in results (DR-009).
+1. Session start: a session-start hook or the agent calls `memory_bootstrap` for the working repository's namespace. The budget is enforced on the bytes on the wire (the REST body, or the whole JSON-RPC reply over MCP), and an item that does not fit is never admitted, the first one included.
+2. Search on demand: `memory_search`, reciprocal rank fusion of FTS5 and cosine over record embeddings when the encoder answers, FTS5 otherwise.
+3. Hub reach: a hub namespace searches every repository namespace.
+4. Staleness: each anchor type names the process that checks it and where it runs. Entity anchors are swept by the add-on; path, host and URL anchors are reported by clients. Unchecked, unavailable and missing are tracked separately, and a record whose anchor is missing is flagged in results.
 
 ## Write path
 
@@ -55,62 +41,32 @@ Token handling: each token is generated on desktop and stored where only its cli
 |---|---|
 | 1. Write | `memory_store` / `memory_update` over MCP, authenticated per agent |
 | 2. Screen | every persisted field, as under Trust |
-| 3. Duplicate check | advisory only. The nearest records by embedding (FTS when the encoder is away, with its own threshold) come back as `possible_duplicate_of`, and the caller chooses to corroborate, merge or create. A weak or offline match is never proof of uniqueness. Thresholds are set per backend on labelled pairs (DR-005) |
-| 4. Supersede | separate from duplicates. Allowed only for an active target in the same namespace, when the replacement is itself active, never to itself, and never in a cycle; checked in the same transaction (DR-005, DR-010) |
-| 5. Status | server-owned, as under Trust. A preference the owner states is `active` with no review (settled) |
-| 6. Concurrency | an integer `revision` on every record, incremented by every mutation (content, anchors, evidence, status). `memory_update` takes the revision it read, applies `UPDATE ... WHERE id=? AND revision=?` with the anchor and lifecycle changes in one transaction, and a mismatch returns the current record and revision. `updated_at` stays for display (DR-006) |
-| 7. Offline | no general outbox. Direct edits fail visibly when the service is away. Only `session_close` events are spooled locally, each with an operation id and the client that made it; only that client's next session replays it. The service keeps an idempotency receipt per id, bound to the client and every input, returns the original result on replay, and keeps a tombstone past the retention so an id never runs twice (DR-007) |
+| 3. Evidence | a second agent agreeing or disagreeing files `memory_corroborate` on the record instead of storing it again |
+| 4. Supersede | allowed only for an active target in the same namespace, when the replacement is itself active, never to itself, and never in a cycle; checked in the same transaction |
+| 5. Status | server-owned, as under Trust |
+| 6. Concurrency | an integer `revision` on every record, incremented by every mutation (content, anchors, evidence, status). `memory_update` takes the revision it read, applies `UPDATE ... WHERE id=? AND revision=?` with the anchor and lifecycle changes in one transaction, and a mismatch returns the current record and revision. `updated_at` stays for display |
+| 7. Offline | no general outbox. Direct edits fail visibly when the service is away. Only `session_close` events are spooled by the client, each with an operation id; only that client replays it. The service keeps an idempotency receipt per id, bound to the client and every input, returns the original result on replay, and keeps a tombstone past the retention so an id never runs twice |
 
-The existing queue (session close, then an extraction job, then candidates) stays.
-
-## Migration
-
-Every native item gets one disposition in a manifest before anything is switched off (DR-011).
-
-| Disposition | Meaning |
-|---|---|
-| `agents-rule` | already, or now, a rule in `AGENTS.md` (link) |
-| `records-fact` | a measured fact; lives in `records/` (link), never imported into memory |
-| `memory` | learned, durable knowledge; imported as `candidate`, except a preference the owner stated, which is `active` |
-| `discard` | task-scoped, superseded or wrong, with the reason |
-| `unresolved` | needs the owner; blocks the switch-off |
-
-Imported records carry structured provenance fields, not prose: source store, path, content hash, import batch. Codex memories come in as candidates and are reviewed before they become active (settled).
-
-## Switch-off
-
-A switch-off is allowed when (DR-012):
-1. every manifest item has a disposition, and none is `unresolved`;
-2. every `memory` item has a retrieval query that returns it (a shadow corpus checked by the existing eval tooling), with negative controls that return nothing;
-3. a fresh session in each agent, in a repository other than ha-management, shows the bootstrap and one search answering;
-4. The owner approves the settings change: Codex `features.memories = false` in `~/.codex/config.toml`, then Claude `autoMemoryEnabled: false` in `~/.claude/settings.json` (Claude Code 2.1.281: "When false, Claude will not read or write to the auto-memory directory").
-
-Elapsed time is not a criterion.
+Session close queues an extraction job; the worker stores candidates; the nightly review forgets duplicates and session state; an agent promotes or forgets the rest at session start.
 
 ## Failure modes
 
 | Condition | Behaviour |
 |---|---|
-| HA VM or add-on down | sessions start without bootstrap (the hook prints one line); session-close events spool; direct writes fail visibly |
-| Encoder down (rack off) | FTS search, FTS duplicate check with its own threshold; embeddings back-filled when it returns |
+| Home Assistant or the add-on down | sessions start without bootstrap; session-close events spool on the client; direct writes fail visibly |
+| Encoder down | full-text search; embeddings back-filled when it returns |
+| Model server down | extraction and answer jobs stay queued; `/health` reads degraded while jobs wait |
 | Bootstrap over budget | items that do not fit are left out, and the count is reported |
-| A token leaks | regenerate it; the add-on option carries only the hash, so a rotation is one option change and one client-side store |
+| A token is replaced | the client is removed and added back for a new token; the add-on keeps only hashes |
 
 ## Evaluation
 
-- Retrieval: `tools/retrieval-eval/` (72 frozen queries), plus the shadow corpus built from the manifest.
+- Retrieval: `tools/retrieval-eval/` (frozen queries against a frozen snapshot).
+- Nightly review: `tools/review-eval/` (verdicts against the reviews agents made).
 - Bootstrap: the serialized size of every bootstrap, against its budget.
 - Write protocol: tests for revision conflicts, supersede rules, idempotent replay, the screen over every field, and server-owned status and identity.
 - Use: the query log (the demand signal) shows whether sessions search at all.
 
 ## Storage
 
-SQLite with FTS5 and a float32 embeddings table, in the add-on. Measured 2026-09-28: bootstrap over the LAN 4-6 ms, reading all 72 Claude memory files 9 ms, one model turn several seconds. A separate database server would save milliseconds and add a service to run.
-
-## Decided
-
-- Preferences the owner states are written `active` with no review (the owner, 2026-09-28).
-- Codex memories are reviewed before import (the owner, 2026-09-28).
-- `AGENTS.md` is the only always-loaded source; no pinning; per-agent tokens; server-owned identity and status; integer revisions; only session-close events spool offline; a manifest decides migration (the owner chose Codex's simpler design, 2026-09-28).
-- Candidates are reviewed by the agent at session start (the owner, 2026-09-28).
-- The enrichment model reviews candidates each night, forget only: duplicates and session state go, promotion stays with the agent (the owner, 2026-10-02).
+SQLite with FTS5 and a float32 embeddings table, in the add-on. Measured 2026-09-28: bootstrap over the LAN 4-6 ms, one model turn several seconds. A separate database server would save milliseconds and add a service to run.

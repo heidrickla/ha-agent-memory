@@ -1,8 +1,43 @@
 # ha-agent-memory
 
-Home Assistant add-on: one shared, bounded memory for Claude Code, Codex and other agents, so a session starts from what earlier sessions learned instead of re-reading the repository. Canonical storage and retrieval never depend on a paid model or on a model server: an encoder, when configured, improves ranking and search answers from full-text search whenever it does not.
+Home Assistant add-on: one shared, bounded memory for Claude Code, Codex and other MCP agents, so a session starts from what earlier sessions learned instead of re-reading the repository. Storage and retrieval run in the add-on on SQLite full-text search and never depend on a paid model or a model server; an encoder and a local model server, when configured, improve ranking and enrich session notes.
 
-It carries storage, namespaces, FTS5 and embedding retrieval, progressive MCP tools, the Home Assistant packaging, and enrichment through a local model server (`enrich.py`: redacted notes in, validated candidates out, candidates never active until promoted, a job done only after its records are written). The shared-memory design is `docs/shared-memory.md`.
+[![Add the repository to Home Assistant](https://my.home-assistant.io/badges/supervisor_add_addon_repository.svg)](https://my.home-assistant.io/redirect/supervisor_add_addon_repository/?repository_url=https%3A%2F%2Fgithub.com%2Fheidrickla%2Fha-agent-memory)
+[![Open the add-on in Home Assistant](https://my.home-assistant.io/badges/supervisor_addon.svg)](https://my.home-assistant.io/redirect/supervisor_addon/?addon=d6a204a0_agent_memory&repository_url=https%3A%2F%2Fgithub.com%2Fheidrickla%2Fha-agent-memory)
+
+## Setup
+
+1. Add the repository with the first button, then open Agent Memory with the second and install it.
+2. Start it. On first start it generates a token for each of the two default clients, `claude-code` and `codex`, and shows each token once in the Log tab with the command that uses it.
+3. Claude Code: run the logged command, `claude mcp add --scope user --transport http agent-memory http://<home-assistant-host>:8765/mcp --header 'Authorization: Bearer <token>'`, with the address you reach Home Assistant at.
+4. Codex: set `AGENT_MEMORY_TOKEN` to the `codex` token, and in `~/.codex/config.toml` add `[mcp_servers.agent_memory]` with `url = "http://<home-assistant-host>:8765/mcp"` and `bearer_token_env_var = "AGENT_MEMORY_TOKEN"`.
+5. Open the Memory panel in the sidebar: the Connect an agent card lists the clients and repeats the commands without the token.
+
+Another agent: add a client with its name and scopes on the Configuration tab and restart; its token appears in the log. A new token for an existing client: remove it, restart, add it back and restart. Nothing else needs to be typed: enrichment and embedding retrieval stay off until a model server URL is set.
+
+## Options
+
+All optional. The numeric and model options have built-in defaults.
+
+| Option | Default | Effect |
+|---|---|---|
+| `clients` | `claude-code` and `codex`, each read, write and delete, tokens generated | Who may call: `name`, `scopes`, and optionally `ip` (reads only, by source address) or `token_sha256` (a token made elsewhere). |
+| `github_owner` | unset: every owner | Narrows `memory_namespace` to GitHub remotes under this owner. |
+| `forge_hosts`, `forge_owner` | none, unset | Gitea or Forgejo hosts whose remotes become `gitea/<owner>/<repo>`, optionally only under this owner. |
+| `project_links` | none | Repository namespaces that share a `projects/<name>` scope. |
+| `hubs` | none | Namespaces whose search and task match reach every other repository namespace. |
+| `namespace_renames` | none | `{from, to}` owner prefixes moved at start after an owner rename. |
+| `review_at` | `03:00` | Local time of the nightly candidate review; `off` turns it off. |
+| `candidate_expiry_days` | 14 | Days an extracted candidate waits for review before the nightly review forgets it; `0` off. |
+| `summary_candidates` | `false` | Keep each session's closing summary as a candidate. |
+| `anchor_sweep_hours` | 6 | Interval of the entity anchor check, 1 to 168. |
+| `context_budget_tokens`, `hard_context_limit_tokens` | 4000, 8000 | Default and maximum `project_context` packet. |
+| `retention_deleted_days` | 30 | Forgotten records and recorded queries are purged after it. |
+| `ollama_url`, `ollama_fallback_url`, `ollama_direct_urls` | unset: no enrichment | Ollama, or an OpenAI-style server when the URL ends in `/v1` ([Model server](#model-server)). |
+| `ollama_model`, `ollama_models`, `ollama_timeout_s` | `qwen3.5:9b`, unset, 120 | Default model, per-kind chains, call limit ([Model routing](#model-routing)). |
+| `embed_url`, `embed_model`, `embed_timeout_s` | unset: full-text only, `qwen3-emb-0.6b`, 2 | Encoder for embedding retrieval ([Embedding retrieval](#embedding-retrieval)). |
+
+## Design
 
 | Piece | Choice |
 |---|---|
@@ -12,7 +47,7 @@ It carries storage, namespaces, FTS5 and embedding retrieval, progressive MCP to
 | Retrieval order | repository, its linked projects, given topics, global; a hub's search and task match then reach every other repository namespace |
 | Ranking | reciprocal rank fusion of FTS5 and cosine over record embeddings when the encoder answers, FTS5 otherwise ([Embedding retrieval](#embedding-retrieval)) |
 | Budgets | bootstrap 500 tokens over the whole response (2,000 bytes), search 750, records 2000, packet 4000 (hard limit 8000); every response reports its estimate and truncation |
-| Auth | per-client bearer token (sha256 in options) or source address; scopes read, write, delete, export, admin, checked by one rule for MCP tools and REST routes; an address client gets `read` at most; a token client is recorded as the writer |
+| Auth | per-client bearer token (generated by the add-on, or a sha256 in options) or source address; scopes read, write, delete, export, admin, checked by one rule for MCP tools and REST routes; an address client gets `read` at most; a token client is recorded as the writer |
 | Requests | a request with an `Origin` header gets 403; a POST must be `application/json` (415) with a `Content-Length` from 0 to 1 MiB (400, 413) |
 | Filtering | every persisted field and queued payload: credentials, key material, JWTs, URL passwords and the `do-not-store` marker are refused and audited by field and pattern name; every database write passes the same screen, and audit context carrying a secret is kept as `[screened:<pattern>]` |
 | Page | ingress only, dark, drawn as graphics: status tiles, records by type and status, namespaces, audit rows per hour, model servers and encoder, nightly review and anchor sweep, unused records, latest audit rows |
@@ -39,7 +74,7 @@ It carries storage, namespaces, FTS5 and embedding retrieval, progressive MCP to
 | Anchor | Checked by | Where |
 |---|---|---|
 | `entity:` | the add-on's sweep, every `anchor_sweep_hours`, and `memory_anchor_sweep` | the add-on, against Home Assistant's states through the Supervisor |
-| `path:` | a client that can see the path, through `memory_anchor_report`; on desktop, ha-management's `tools/memory_anchor_sweep.py --hook` at every Claude Code SessionStart, which resolves a relative path against the checkout of the record's repository namespace and reports `unavailable` when it has none | the host holding the path |
+| `path:` | a client that can see the path, through `memory_anchor_report`, for example a session-start hook that resolves a relative path against the checkout of the record's repository namespace and reports `unavailable` when it has none | the host holding the path |
 | `host:` | a client, through `memory_anchor_report` | any host on the LAN |
 | `url:` | a client, through `memory_anchor_report` | any host that can reach the URL |
 
@@ -83,7 +118,7 @@ Each anchor keeps its last definitive state, `unchecked`, `ok` or `missing`, and
 A miss on a query's vector marks the encoder down until the next probe, so a dead encoder costs one search `embed_timeout_s` and later searches nothing.
 
 ```yaml
-embed_url: http://192.0.2.20:8080/v1
+embed_url: http://<encoder-host>:8080/v1
 embed_model: qwen3-emb-0.6b
 embed_timeout_s: 2
 ```
@@ -131,7 +166,7 @@ A stale answer stays readable and is labelled stale, never silently served as cu
 |---|---|
 | Live | a server that answered its last availability probe; a probe runs at least every 15 s from the worker's poll, never inside a call; a server not yet probed counts as live |
 | Chosen | the live server with the fewest calls in flight, `ollama_url` first on a tie; the nightly review runs one worker per live server and at least two, so its candidates split between the hosts |
-| Tiers | `ollama_url` and `ollama_fallback_url` first; `ollama_direct_urls` only while neither is live. Here `ollama_url` is the Voice Bridge's router (`http://local-voice-bridge:8789/v1`), which keeps background calls off the host a voice turn is using, and the direct URLs are the two hosts' llama-swap |
+| Tiers | `ollama_url` and `ollama_fallback_url` first; `ollama_direct_urls` only while neither is live, for example a router in front of several hosts as `ollama_url` and the hosts themselves as direct URLs |
 | A server that does not answer a call | marked down until its next probe; the call moves to the next live server |
 | An HTTP error from a server that answered | that model's failure: the next model in the chain on the same server, then the next server |
 | A model that is not running | the call goes to the server anyway; llama-swap loads a configured model on its first request |
@@ -175,15 +210,14 @@ A contradicted record stays `active` and readable: disagreement is recorded, not
 
 ## Clients
 
-Claude Code, user scope: `claude mcp add --scope user --transport http agent-memory http://192.0.2.10:8765/mcp`. Codex (`~/.codex/config.toml`): `[mcp_servers.agent_memory]` with `url = "http://192.0.2.10:8765/mcp"`. A client authenticating by token adds `Authorization: Bearer <token>` and its sha256 to the options. `tools/retrieval-eval/fetch.py` sends `AGENT_MEMORY_TOKEN_CLAUDE` (`--codex`: `AGENT_MEMORY_TOKEN_CODEX`), read from the process environment, then the Windows user environment.
+A client listed by name alone gets a token the add-on generates; it is logged once and only its sha256 is kept, in `/data/client_tokens.json`. A client whose token is made elsewhere lists its sha256 as `token_sha256`. An agent sends `Authorization: Bearer <token>`: Claude Code through `--header` on `claude mcp add` or a `headersHelper`, Codex through `bearer_token_env_var`. `tools/retrieval-eval/fetch.py` reads `AGENT_MEMORY_URL` and sends `AGENT_MEMORY_TOKEN_CLAUDE` (`--codex`: `AGENT_MEMORY_TOKEN_CODEX`), from the process environment, then the Windows user environment.
 
 ## Develop
 
 ```
 python -m pytest -q tests
-python -m ruff check . && python -m ruff format --check .
+python -m ruff check .
+python -m ruff format --check .
 ```
 
-The forge workflow `.gitea/workflows/validate.yml` runs these plus yamllint and shellcheck.
-
-Deploy: `git archive --format=tar HEAD agent_memory | ssh root@<ha> 'tar -x -C /local_apps && ha store reload'`, then install or rebuild `local_agent_memory`.
+`.github/workflows/ci.yml` runs these with yamllint, shellcheck, hadolint and the add-on linter, then builds the image for amd64 and aarch64 and runs `tests/run_image.sh` against each. `.gitea/workflows/validate.yml` runs the lint and tests on a Gitea or Forgejo runner.
