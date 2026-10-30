@@ -34,7 +34,7 @@ jobs:
         run: >-
           yamllint -d "{extends: relaxed, rules: {line-length: {max: 260}, comments: {min-spaces-from-content: 1}}}"
           repository.yaml agent_memory/config.yaml agent_memory/translations/en.yaml
-          .github/workflows/ci.yml .gitea/workflows/validate.yml
+          .github/workflows/ci.yml .gitea/workflows/validate.yml .gitea/workflows/image.yml
       - name: shellcheck
         run: shellcheck agent_memory/run.sh tests/run_image.sh
       - name: hadolint

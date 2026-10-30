@@ -37,7 +37,7 @@ jobs:
         run: >-
           yamllint -d "{extends: relaxed, rules: {line-length: {max: 260}, comments: {min-spaces-from-content: 1}}}"
           repository.yaml agent_memory/config.yaml agent_memory/translations/en.yaml
-          .gitea/workflows/validate.yml .github/workflows/ci.yml
+          .gitea/workflows/validate.yml .gitea/workflows/image.yml .github/workflows/ci.yml
 
       - name: shellcheck
         timeout-minutes: 15
