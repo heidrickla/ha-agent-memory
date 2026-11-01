@@ -8,6 +8,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "agent_memory"))
 import page
+import server as srv
 from test_memory import NS, call, http, rec  # noqa: F401  (http is a fixture)
 
 NOW = dt.datetime(2026, 10, 2, 23, 30, tzinfo=dt.UTC)
@@ -77,8 +78,11 @@ def data(**over):
 
 def test_page_draws_every_card_from_live_shaped_data():
     out = page.render(data())
-    for title in ("Records", "Namespaces", "Audit, last 24 h", "Models", "Maintenance"):
-        assert f"<span>{title}</span>" in out
+    for title in ("Record composition", "Largest namespaces", "Audit, last 24 h", "Model health", "Maintenance"):
+        assert title in out
+    assert "Overview" in out and "Browse records" in out and "Stored records" in out
+    assert 'href="?view=browse&amp;status=candidate"' in out
+    assert 'href="?view=browse&amp;kind=constraint"' in out
     assert "2 of 3 live" in out  # the model servers tile counts live servers
     assert "1 in flight" in out and "tier 0" in out
     assert "searches that found records" in out and "24 of 30" in out
@@ -106,9 +110,11 @@ def test_colours_in_svg_go_through_style():
 def test_denied_calls_and_a_dead_encoder_are_flagged():
     h = {**HEALTH, "denied": 2, "embeddings": {**HEALTH["embeddings"], "encoder": "unavailable", "error": "connection refused"}}
     out = page.render(data(health=h))
-    assert 'class="tile alert"' in out
+    assert "Memory service needs attention" in out
+    assert "Needs attention" in out
     assert "connection refused" in out
-    assert 'class="tile alert"' not in page.render(data())
+    healthy = {**HEALTH, "enrichment": {**HEALTH["enrichment"], "servers": [{**s, "live": True} for s in HEALTH["enrichment"]["servers"]]}}
+    assert "Memory service operational" in page.render(data(health=healthy))
 
 
 def test_values_are_escaped():
@@ -141,7 +147,7 @@ def test_counts_split_status_and_type_and_keep_to_the_window(http):  # noqa: F81
     assert "old" not in c["clients"]  # older than the window
     assert c["searches"]["total"] >= 1
     s, html_page = call(base, "/", headers={"X-Ingress-Path": "/api/hassio_ingress/x"})
-    assert s == 200 and "<span>Namespaces</span>" in html_page and NS in html_page
+    assert s == 200 and "Largest namespaces" in html_page and NS in html_page
 
 
 def test_the_unused_card_waits_for_its_window_then_lists_records():
@@ -171,3 +177,30 @@ def test_the_panel_carries_the_unused_list(http):  # noqa: F811
     assert app.panel_data()["unused"]["complete"] is False
     s, html_page = call(base, "/", headers={"X-Ingress-Path": "/api/hassio_ingress/x"})
     assert s == 200 and "<span>Unused records</span>" in html_page
+
+
+def test_record_browser_is_read_only_filtered_and_escaped(http, monkeypatch):  # noqa: F811
+    base, app = http
+    active = app.store.store(rec(title="<b>Router</b> restarts", content="Check the gateway before restarting."), "desk")
+    candidate = app.store.store(rec(title="Candidate gateway", content="A gateway observation.", status="candidate"), "desk")
+    before = app.store.db.execute("select count(*) from audit").fetchone()[0]
+    assert call(base, "/?view=browse", headers={"X-Ingress-Path": "/api/hassio_ingress/x"})[0] == 404
+    monkeypatch.setattr(srv, "INGRESS_PEER", "127.0.0.1")
+    assert call(base, "/?view=browse")[0] == 404  # the proxy path must also be present
+    headers = {"X-Ingress-Path": "/api/hassio_ingress/x"}
+    status, browser = call(base, "/?view=browse&status=active&query=router", headers=headers)
+    assert status == 200 and "Record browser" in browser
+    assert "&lt;b&gt;Router&lt;/b&gt; restarts" in browser and "<b>Router</b>" not in browser
+    assert active["id"][:8] in browser and candidate["id"][:8] not in browser
+    assert "Candidate gateway" not in browser
+    assert "Revision" in browser and "read only" in browser
+    assert app.store.db.execute("select count(*) from audit").fetchone()[0] == before
+    assert app.store.db.execute("select count(*) from usage").fetchone()[0] == 0
+
+
+def test_record_browser_rejects_invalid_filters_and_bounds(http, monkeypatch):  # noqa: F811
+    base, _ = http
+    monkeypatch.setattr(srv, "INGRESS_PEER", "127.0.0.1")
+    headers = {"X-Ingress-Path": "/api/hassio_ingress/x"}
+    for path in ("/?view=browse&status=deleted", "/?view=browse&page=0", "/?view=browse&page=wat", "/?view=browse&query=" + "x" * 121):
+        assert call(base, path, headers=headers)[0] == 400

@@ -1,4 +1,4 @@
-"""The ingress page: cards drawn server-side as HTML and inline SVG, no script. Dark.
+"""The ingress page: server-rendered overview and read-only record browser.
 
 `render` takes plain data (`App.panel_data`), so the page is testable without a server. Colour always travels
 with a text label or a tooltip; the status colours are reserved for state, the series colours for identity.
@@ -9,35 +9,11 @@ from __future__ import annotations
 import datetime as dt
 import html
 import math
+from pathlib import Path
+from urllib.parse import urlencode
 from typing import Any
 
-CSS = """:root{color-scheme:dark;--bg:#111418;--card:#181c21;--line:#2c3138;--track:#232830;--text:#e3e6ea;--muted:#9aa3ad;
---faint:#5f6b78;--s1:#3987e5;--s2:#d95926;--s3:#199e70;--s4:#9085e9;--good:#0ca30c;--warn:#fab219;--crit:#d03b3b}
-*{box-sizing:border-box}body{font:14px/1.45 system-ui,sans-serif;margin:0;padding:1.25rem;background:var(--bg);color:var(--text)}
-main{max-width:76rem;margin:auto}code{font-size:.88em;color:#c9d1d9}h1{margin:0 0 .2rem;font-size:1.5rem}
-p.sub{color:var(--muted);margin:0 0 .9rem}h2{font-size:1rem;margin:0 0 .7rem}h3{font-size:.9rem;margin:.9rem 0 .4rem}
-.tiles{display:grid;grid-template-columns:repeat(auto-fit,minmax(9rem,1fr));gap:.6rem}
-.tile{background:var(--card);border:1px solid var(--line);border-radius:.6rem;padding:.5rem .75rem}
-.tile .k{color:var(--muted);font-size:.8rem}.tile .v{font-size:1.15rem;font-weight:600;white-space:nowrap}.tile.alert{border-color:var(--crit)}
-.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(22rem,1fr));gap:1rem;margin-top:1rem}
-.card{background:var(--card);border:1px solid var(--line);border-radius:.75rem;padding:.9rem 1rem;min-width:0}.card.wide{grid-column:1/-1}
-.muted{color:var(--muted)}.small{font-size:.82rem}.row{display:flex;align-items:center;gap:.6rem;flex-wrap:wrap}
-.dot{display:inline-block;width:.62rem;height:.62rem;border-radius:50%;background:var(--faint);flex:none}
-.good{background:var(--good)}.warn{background:var(--warn)}.crit{background:var(--crit)}.idle{background:var(--faint)}
-.s1{background:var(--s1)}.s2{background:var(--s2)}.s3{background:var(--s3)}.s4{background:var(--s4)}
-.chip{display:inline-flex;align-items:center;gap:.35rem;padding:.08rem .55rem;border-radius:.7rem;background:var(--track);font-size:.82rem;white-space:nowrap}
-.bar{display:flex;height:.55rem;background:var(--track);border-radius:.3rem;overflow:hidden;flex:1;min-width:4rem}.bar>i{display:block;height:100%}
-.stack{display:flex;gap:2px;height:.7rem;border-radius:.35rem;overflow:hidden;background:var(--track)}.stack>i{display:block;height:100%}
-.legend{display:flex;flex-wrap:wrap;gap:.3rem .9rem;margin-top:.4rem;font-size:.82rem;color:var(--muted)}
-.legend span{display:inline-flex;align-items:center;gap:.35rem}.legend b{color:var(--text);font-weight:600}
-.list{display:grid;gap:.45rem}.metric{display:grid;grid-template-columns:11rem 1fr 3rem;gap:.6rem;align-items:center;font-size:.85rem}
-.metric .val{text-align:right}.ns{grid-template-columns:minmax(0,22rem) 1fr 3rem 5rem}
-.ns code{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.split{display:flex;gap:1rem;align-items:center;flex-wrap:wrap}
-.ring{text-align:center;font-size:.78rem;color:var(--muted);width:7rem}
-.server{display:grid;grid-template-columns:auto auto minmax(0,1fr) auto;gap:.6rem;align-items:center;font-size:.85rem}
-.server code{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-table{border-collapse:collapse;width:100%;font-size:.84rem}td,th{border-bottom:1px solid var(--line);padding:.35rem .4rem;text-align:left;vertical-align:top}
-th{color:var(--muted);font-weight:600}details{margin-top:.7rem}summary{cursor:pointer;color:var(--muted);font-size:.85rem}"""
+CSS = Path(__file__).with_name("page.css").read_text(encoding="utf-8")
 
 SERIES = ("s1", "s2", "s3", "s4")
 STATUS = (("active", "s1"), ("candidate", "warn"), ("superseded", "idle"))
@@ -143,6 +119,10 @@ def words(name: str) -> str:
     return name.replace("-", " ")
 
 
+def browse_href(**filters: str | int) -> str:
+    return "?" + urlencode({"view": "browse", **{k: v for k, v in filters.items() if v != ""}})
+
+
 # --- sections ---------------------------------------------------------------------------------------------
 
 
@@ -150,62 +130,80 @@ def tiles(d: dict[str, Any]) -> str:
     h = d["health"]
     enrich, emb = h.get("enrichment") or {}, h.get("embeddings") or {}
     servers = enrich.get("servers") or []
-    live = sum(1 for s in servers if s.get("live"))
-
-    def tile(k: str, v: str, cls: str, title: str = "", alert: bool = False) -> str:
-        return f'<div class="tile{" alert" if alert else ""}" title="{esc(title or k)}"><div class=k>{esc(k)}</div><div class="v row">{dot(cls)}{v}</div></div>'
-
-    ok = h.get("status") == "ok"
+    offline = sum(not s.get("live", False) for s in servers)
+    status_ok = h.get("status") == "ok"
     encoder = emb.get("encoder", "off")
-    model = enrich.get("ollama", "off")
-    denied = int(h.get("denied") or 0)
-    cands = int(h.get("candidates") or 0)
-    servers_cls = "good" if live or model == "available" else "idle" if model == "off" else "crit"
+    vector_total = int(emb.get("records") or 0)
+    vector_current = int(emb.get("current") or 0)
+    coverage = f"{100 * vector_current / vector_total:.0f}%" if encoder == "available" and vector_total else "Off" if encoder == "off" else "Unavailable"
+    coverage_note = f"{vector_current} of {vector_total} vectors current" if encoder == "available" and vector_total else "Search uses full text"
+    status_detail = "Encoder available" if encoder == "available" else "Search using full text"
+    if offline:
+        status_detail += f" · {offline} of {len(servers)} model endpoints offline"
+    if h.get("denied"):
+        status_detail += f" · {h['denied']} denied calls"
+    healthy = status_ok and not offline and encoder != "unavailable" and not h.get("denied")
+    status_name = "Memory service operational" if healthy else "Memory service needs attention"
+    status_cls = "good-text" if healthy else "warn-text"
+    status_text = "Operational" if healthy else "Needs attention"
+
+    def kpi(label: str, value: str, note: str, href: str = "", tone: str = "") -> str:
+        tag = "a" if href else "div"
+        link = f' href="{esc(href)}"' if href else ""
+        return f'<{tag} class="kpi{" metric-link" if href else ""}"{link}><div class=kpi-label>{esc(label)}</div><div class="kpi-value {tone}">{esc(value)}</div><div class=kpi-note>{esc(note)}</div></{tag}>'
+
     return (
-        "<div class=tiles>"
-        + "".join(
-            [
-                tile("Status", esc(h.get("status")), "good" if ok else "warn", "degraded: jobs queued while the model is not available"),
-                tile("Records", str(h.get("records", 0)), "s1", "records stored, candidates included"),
-                tile("Candidates", str(cands), "warn" if cands else "good", "waiting for review at session start"),
-                tile("Namespaces", str(h.get("namespaces", 0)), "s1"),
-                tile("Encoder", esc(encoder), "good" if encoder == "available" else "idle" if encoder == "off" else "crit", "search ranks by full text alone while the encoder does not answer"),
-                tile("Model servers", f"{live} of {len(servers)} live" if servers else esc(model), servers_cls),
-                tile("Calls since start", str(h.get("requests", 0)), "s1"),
-                tile("Denied", str(denied), "crit" if denied else "good", "calls from unknown clients", alert=bool(denied)),
-                tile("Uptime", span(int(h.get("uptime_s") or 0)), "good"),
-                tile("Database", size(int(h.get("db_bytes") or 0)), "s1", "SQLite file, WAL excluded"),
-            ]
-        )
-        + "</div>"
+        f"<section class=healthstrip><div><strong>{status_name}</strong><div class=detail>{esc(status_detail)} · checked {esc(local(d['now'], '%Y-%m-%d %H:%M'))}</div></div>"
+        f'<div class="state {status_cls}"><span class=tiny-dot></span>{status_text}</div></section>'
+        '<section class=kpis aria-label="Key metrics">'
+        + kpi("Stored records", str(h.get("records", "—")), f"{h.get('namespaces', '—')} namespaces", browse_href())
+        + kpi("Review candidates", str(h.get("candidates", "—")), "Awaiting agent review", browse_href(status="candidate"), "amber")
+        + kpi("Vector coverage", coverage, coverage_note, tone="blue")
+        + kpi("Calls since start", str(h.get("requests", "—")), f"{h.get('denied', '—')} denied · uptime {span(int(h.get('uptime_s') or 0))}")
+        + "</section>"
     )
 
 
 def records_card(d: dict[str, Any]) -> str:
     by_type: dict[str, dict[str, int]] = d["counts"]["types"]
     if not by_type:
-        return card("Records", "<p class=muted>Nothing stored yet.</p>")
+        return "<section class=card><div class=cardhead><h2>Record composition</h2></div><p class=muted>Nothing stored yet.</p></section>"
     totals = {s: sum(t.get(s, 0) for t in by_type.values()) for s, _ in STATUS}
     widest = max(sum(t.values()) for t in by_type.values()) or 1
-    rows = "".join(
-        f"<div class=metric><span>{esc(words(name))}</span>{segments([(s, t.get(s, 0), cls) for s, cls in STATUS], widest)}<span class=val>{sum(t.values())}</span></div>"
-        for name, t in sorted(by_type.items(), key=lambda kv: (-sum(kv[1].values()), kv[0]))
+    rows = []
+    for name, counts in sorted(by_type.items(), key=lambda kv: (-sum(kv[1].values()), kv[0]))[:6]:
+        n = sum(counts.values())
+        rows.append(
+            f'<a class=type-link href="{esc(browse_href(kind=name))}"><span class=label>{esc(words(name))}</span><span class=bar><i class=s1 style="width:{100 * n / widest:.1f}%"></i></span><span class=value>{n}</span></a>'
+        )
+    total = sum(totals.values())
+    legend = "".join(f'<a href="{esc(browse_href(status=s))}">{dot(cls)}{s} <b>{totals[s]}</b></a>' for s, cls in STATUS if totals[s])
+    status_bar = "".join(f'<i class={cls} style="flex:{totals[s]}"></i>' for s, cls in STATUS if totals[s])
+    return (
+        "<section class=card><div class=cardhead><div><h2>Record composition</h2><div class=card-sub>Stored records by status and type</div></div>"
+        f"<span class=smallpill>{total} total</span></div><div class=record-total>{totals['active']} <span>active records</span></div>"
+        f'<div class=stack role=img aria-label="{esc(", ".join(f"{s} {totals[s]}" for s, _ in STATUS))}">{status_bar}</div><div class=legend>{legend}</div><div class=divider></div>'
+        "<h3>Most common record types</h3><div class=type-list>" + "".join(rows) + "</div></section>"
     )
-    return card("Records", f"{stacked([(s, totals[s], cls) for s, cls in STATUS])}<h3>By type</h3><div class=list>{rows}</div>")
 
 
 def namespaces_card(d: dict[str, Any]) -> str:
     rows: dict[str, dict[str, Any]] = d["counts"]["namespaces"]
     if not rows:
-        return card("Namespaces", "<p class=muted>Nothing stored yet.</p>")
+        return "<section class=card><div class=cardhead><h2>Namespaces</h2></div><p class=muted>Nothing stored yet.</p></section>"
     widest = max(sum(r["status"].values()) for r in rows.values()) or 1
-    lines = "".join(
-        f"<div class='metric ns'><code title='{esc(ns)}'>{esc(ns)}</code>{segments([(s, r['status'].get(s, 0), cls) for s, cls in STATUS], widest)}"
-        f"<span class=val>{sum(r['status'].values())}</span><span class='small muted' title='{esc(local(r['last']))}'>{ago(r['last'], d['now'])}</span></div>"
-        for ns, r in sorted(rows.items(), key=lambda kv: (-sum(kv[1]["status"].values()), kv[0]))
+    lines = []
+    for namespace, row in sorted(rows.items(), key=lambda kv: (-sum(kv[1]["status"].values()), kv[0]))[:5]:
+        n = sum(row["status"].values())
+        lines.append(
+            f'<a class=namespace-link href="{esc(browse_href(namespace=namespace))}" title="{esc(namespace)}">'
+            f'<span class=label>{esc(namespace)}</span><span class=bar><i class=s1 style="width:{100 * n / widest:.1f}%"></i></span>'
+            f'<span class=value>{n}</span><span class=age title="{esc(local(row["last"]))}">{ago(row["last"], d["now"])}</span></a>'
+        )
+    return (
+        "<section class=card><div class=cardhead><div><h2>Largest namespaces</h2><div class=card-sub>Recent activity and record counts</div></div>"
+        f"<span class=smallpill>Top {len(lines)} of {len(rows)}</span></div><div class=namespace-list>{''.join(lines)}</div></section>"
     )
-    legend = "".join(f"<span>{dot(cls)}{s}</span>" for s, cls in STATUS)
-    return card("Namespaces", f"<div class=list>{lines}</div><div class=legend>{legend}<span>last update on the right</span></div>", "wide")
 
 
 def hours_chart(d: dict[str, Any]) -> str:
@@ -268,7 +266,35 @@ def activity_card(d: dict[str, Any]) -> str:
 
 
 def models_card(d: dict[str, Any]) -> str:
-    return card("Models", f"<h3>Enrichment</h3>{enrichment(d)}<h3>Encoder</h3>{encoder(d)}")
+    h = d["health"]
+    e = h.get("enrichment") or {}
+    servers = e.get("servers") or []
+    live = sum(bool(server.get("live")) for server in servers)
+    rows = []
+    for index, server in enumerate(servers):
+        active = bool(server.get("live"))
+        tier = server.get("tier", "?")
+        label = "Primary route" if tier == 0 else f"Fallback {index}"
+        state = "Available" if active else "Offline"
+        tone = "good-text" if active else "warn-text"
+        rows.append(
+            f'<div class=model-row><span class="state {tone}"><span class=tiny-dot></span></span><div>'
+            f'<div class=model-name>{esc(label)} · tier {esc(tier)}</div><div class=model-meta title="{esc(server.get("url"))}">{esc(server.get("url"))}</div></div>'
+            f'<span class="model-state {tone}">{state}</span></div>'
+        )
+    if not e.get("configured"):
+        rows.append("<p class=muted>Enrichment is off; no model server is configured.</p>")
+    jobs = h.get("jobs") or {}
+    emb = h.get("embeddings") or {}
+    vector_status = "Off" if emb.get("encoder") == "off" else "Available" if emb.get("encoder") == "available" else "Unavailable"
+    vector_detail = f"{int(emb.get('current') or 0)} of {int(emb.get('records') or 0)} vectors current" if vector_status == "Available" else "Full-text search remains available"
+    return (
+        "<section class=card><div class=cardhead><div><h2>Model health</h2><div class=card-sub>Enrichment and encoder availability</div></div>"
+        f"<span class=smallpill>{live} of {len(servers)} live</span></div><div class=model-list>{''.join(rows)}</div>"
+        f"<div class=model-foot><div><strong>{esc(vector_status)} encoder</strong><br>{esc(vector_detail)}</div>"
+        f"<div><strong>{int(jobs.get('done') or 0)} done</strong><br>{int(jobs.get('failed') or 0)} failed · {int(jobs.get('queued') or 0)} queued</div></div>"
+        "<details><summary>Model configuration and diagnostics</summary>" + enrichment(d) + encoder(d) + "</details></section>"
+    )
 
 
 def enrichment(d: dict[str, Any]) -> str:
@@ -336,7 +362,14 @@ def maintenance_card(d: dict[str, Any]) -> str:
         )
     else:
         sweep = "<p class='small muted'>No sweep yet.</p>"
-    return card("Maintenance", f"<h3>Nightly candidate review</h3>{review}<h3>Anchor sweep</h3>{sweep}")
+    review_card = f"<div class=maint><strong>Candidate review</strong><div class=meta>Last run {ago(rv.get('at'), now)} · next at {esc(rv.get('review_at', '—'))}</div>{review}</div>"
+    sweep_card = f"<div class=maint><strong>Anchor sweep</strong><div class=meta>Last run {ago(sw.get('at'), now)}</div>{sweep}</div>"
+    return (
+        "<section class=card><div class=cardhead><div><h2>Maintenance</h2><div class=card-sub>Recent automated checks</div></div></div><div class=maint-grid>"
+        + review_card
+        + sweep_card
+        + "</div></section>"
+    )
 
 
 def unused_card(d: dict[str, Any]) -> str:
@@ -381,13 +414,115 @@ def connect_card(d: dict[str, Any]) -> str:
         f"<p class=small>Claude Code: <code>claude mcp add --scope user --transport http agent-memory {url} --header 'Authorization: Bearer &lt;token&gt;'</code></p>"
         f'<p class=small>Codex, <code>~/.codex/config.toml</code>: <code>[mcp_servers.agent_memory]</code> with <code>url = "{url}"</code> and <code>bearer_token_env_var = "AGENT_MEMORY_TOKEN"</code>, the token in that variable.</p>'
     )
-    return card("Connect an agent", f"<div class=list>{rows or '<p class=muted>No clients configured.</p>'}</div>{steps}", "wide")
+    return "<section class=card><details><summary>Connect an agent</summary>" + f"<div class=list>{rows or '<p class=muted>No clients configured.</p>'}</div>{steps}" + "</details></section>"
 
 
-def render(d: dict[str, Any]) -> str:
-    cards = [connect_card(d), records_card(d), models_card(d), maintenance_card(d), unused_card(d), namespaces_card(d), activity_card(d)]
+def _browser_link(browser: dict, **changes: str | int) -> str:
+    filters = {key: browser[key] for key in ("query", "namespace", "status", "kind") if browser[key]}
+    filters.update(changes)
+    return browse_href(**filters)
+
+
+def browser_view(d: dict[str, Any], browser: dict) -> str:
+    selected = browser["selected"]
+    empty_message = "No records stored yet." if not d["health"].get("records") else "No records match these filters. Clear the filters to see all records."
+    options = []
+    for value, label in (("", "All statuses"), ("active", "Active"), ("candidate", "Candidate"), ("superseded", "Superseded")):
+        options.append(f'<option value="{value}"{" selected" if value == browser["status"] else ""}>{label}</option>')
+    namespaces = ['<option value="">All namespaces</option>']
+    for row in browser["namespaces"]:
+        namespace = row["namespace"]
+        namespaces.append(f'<option value="{esc(namespace)}"{" selected" if namespace == browser["namespace"] else ""}>{esc(namespace)}</option>')
+    types = ['<option value="">All types</option>']
+    for kind in browser["types"]:
+        types.append(f'<option value="{esc(kind)}"{" selected" if kind == browser["kind"] else ""}>{esc(words(kind))}</option>')
+    rows = []
+    for record in browser["records"]:
+        excerpt = " ".join(record["content"].split())[:180]
+        active = record["id"] == selected["id"] if selected else False
+        href = _browser_link(browser, page=browser["page"], id=record["id"])
+        badge = "candidate" if record["status"] == "candidate" else ""
+        rows.append(
+            f'<a class="memory-item{" selected" if active else ""}" href="{esc(href)}"{" aria-current=page" if active else ""}>'
+            f"<strong>{esc(record['title'])}</strong><span class=excerpt>{esc(excerpt)}</span>"
+            f'<span class=meta><span class="badge {badge}">{esc(record["status"])}</span> · {esc(record["namespace"])} · {esc(words(record["type"]))} · updated {ago(record["updated_at"], d["now"])}</span></a>'
+        )
+    if selected:
+        fields = (
+            ("Status", selected["status"]),
+            ("Type", words(selected["type"])),
+            ("Namespace", selected["namespace"]),
+            ("Revision", selected["revision"]),
+            ("Writer", selected.get("agent") or "—"),
+            ("Source session", selected.get("source_session") or "—"),
+            ("Repository", selected.get("repository") or "—"),
+            ("Commit", selected.get("commit") or "—"),
+            ("Evidence", f"{selected.get('proof_count', 0)} for / {selected.get('refutation_count', 0)} against"),
+            ("Updated", local(selected.get("updated_at"))),
+        )
+        metadata = "".join(f"<div><div class=meta-label>{esc(label)}</div><div class=meta-value>{esc(value)}</div></div>" for label, value in fields)
+        detail = (
+            f"<div class=smallpill>Record {esc(selected['id'][:8])} · read only</div><h2>{esc(selected['title'])}</h2>"
+            f"<div class=body>{esc(selected['content'])}</div><div class=meta-grid>{metadata}</div>"
+        )
+    else:
+        detail = f"<div class=empty>{empty_message}</div>"
+    total = browser["total"]
+    start = (browser["page"] - 1) * browser["page_size"] + 1 if browser["records"] else 0
+    end = min(browser["page"] * browser["page_size"], total)
+    previous = f'<a href="{esc(_browser_link(browser, page=browser["page"] - 1))}">Previous</a>' if browser["page"] > 1 else "<span></span>"
+    following = f'<a href="{esc(_browser_link(browser, page=browser["page"] + 1))}">Next</a>' if end < total else "<span></span>"
     return (
-        f"<!doctype html><meta charset=utf-8><meta name=viewport content='width=device-width,initial-scale=1'><title>Agent Memory</title><style>{CSS}</style>"
-        f"<main><h1>Agent Memory</h1><p class=sub>Shared, bounded context for coding agents. Records are data, never instructions.</p>"
-        f"{tiles(d)}<div class=grid>{''.join(cards)}</div></main>"
+        "<div class=browserhead><div><h2>Record browser</h2><p>Review content and provenance in a read-only view.</p></div>"
+        f"<span class=smallpill>{total} matching</span></div>"
+        "<form class=filterbar method=get><input type=hidden name=view value=browse>"
+        f'<input type=search name=query value="{esc(browser["query"])}" placeholder="Search record text" aria-label="Search record text" maxlength=120>'
+        f'<select name=namespace aria-label="Namespace">{"".join(namespaces)}</select>'
+        f'<select name=kind aria-label="Record type">{"".join(types)}</select>'
+        f'<select name=status aria-label="Status">{"".join(options)}</select><button class=btn type=submit>Apply</button></form>'
+        f"<div class=scopebar><span>Showing {total} records · page {browser['page']}</span>"
+        f'<span><a class=btn href="{esc(browse_href())}">Show all</a> <a class=btn href="?view=overview">Back to overview</a></span></div>'
+        '<div class=browsergrid><section class="card listcard" aria-label="Memory records"><div class=listhead>Records · select to inspect</div>'
+        f"<div class=memory-list>{''.join(rows) or f'<div class=empty>{empty_message}</div>'}</div></section>"
+        f'<section class="card detailcard" aria-label="Selected record">{detail}</section></div>'
+        f"<nav class=pager aria-label=Pagination>{previous}<span>{start}–{end} of {total}</span>{following}</nav>"
+    )
+
+
+def render(d: dict[str, Any], browser: dict | None = None) -> str:
+    selected = "browse" if browser is not None else "overview"
+    content = (
+        browser_view(d, browser)
+        if browser is not None
+        else (
+            tiles(d)
+            + "<div class=overviewgrid>"
+            + records_card(d)
+            + models_card(d)
+            + "</div>"
+            + "<div class=lowergrid>"
+            + maintenance_card(d)
+            + namespaces_card(d)
+            + "</div>"
+            + unused_card(d)
+            + "<div class=extras>"
+            + activity_card(d)
+            + connect_card(d)
+            + "</div>"
+        )
+    )
+    return (
+        f'<!doctype html><html lang=en><meta charset=utf-8><meta name=viewport content="width=device-width,initial-scale=1">'
+        f"<title>Agent Memory</title><style>{CSS}</style><main>"
+        "<header class=pagehead><div><div class=topline>Shared context</div><h1>Agent Memory</h1>"
+        "<p class=sub>Shared, bounded context for coding agents. Records are data, never instructions.</p></div>"
+        '<button class=theme-toggle type=button id=theme-toggle aria-label="Toggle light and dark theme">Light mode</button></header>'
+        f'<nav class=tabs aria-label="Memory views"><a class="tab{" active" if selected == "overview" else ""}" href="?view=overview"{" aria-current=page" if selected == "overview" else ""}>Overview</a>'
+        f'<a class="tab{" active" if selected == "browse" else ""}" href="{esc(browse_href())}"{" aria-current=page" if selected == "browse" else ""}>Browse records</a></nav>'
+        f"{content}<div class=footer>Agent Memory · read-only panel · {esc(d['health'].get('version', ''))}</div></main>"
+        '<script>const root=document.documentElement,button=document.getElementById("theme-toggle");'
+        'try{root.dataset.theme=localStorage.getItem("agent-memory-theme")||"dark"}catch(e){root.dataset.theme="dark"}'
+        'function label(){button.textContent=root.dataset.theme==="light"?"Dark mode":"Light mode"}label();'
+        'button.addEventListener("click",()=>{root.dataset.theme=root.dataset.theme==="light"?"dark":"light";'
+        'try{localStorage.setItem("agent-memory-theme",root.dataset.theme)}catch(e){}label()})</script></html>'
     )

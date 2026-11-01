@@ -1018,6 +1018,40 @@ class Store:
                 return None
             return self._row(r)
 
+    def browse(self, query: str = "", namespace: str = "", status: str = "", kind: str = "", page: int = 1) -> dict:
+        """A bounded, side-effect-free ingress read. The count and rows use the same filters."""
+        query = query.strip()
+        if len(query) > 120 or len(namespace) > 160 or page < 1 or page > 1000:
+            raise ValueError("browser filter out of range")
+        if status and status not in ("active", "candidate", "superseded"):
+            raise ValueError("unknown record status")
+        if kind and kind not in TYPES:
+            raise ValueError("unknown record type")
+        conditions = ["deleted_at is null"]
+        params: list = []
+        if query:
+            conditions.append("(instr(lower(title), lower(?)) > 0 or instr(lower(content), lower(?)) > 0)")
+            params.extend((query, query))
+        if namespace:
+            conditions.append("namespace=?")
+            params.append(namespace)
+        if status:
+            conditions.append("status=?")
+            params.append(status)
+        if kind:
+            conditions.append("type=?")
+            params.append(kind)
+        where = " and ".join(conditions)
+        size = 20
+        with self.lock:
+            total = self.db.execute(f"select count(*) from memories where {where}", params).fetchone()[0]
+            rows = self.db.execute(
+                f"select * from memories where {where} order by updated_at desc, id desc limit ? offset ?",
+                (*params, size, (page - 1) * size),
+            ).fetchall()
+            records = [self._row(row) for row in rows]
+        return {"total": total, "page": page, "page_size": size, "records": records}
+
     def resolve(self, ref: str) -> str | None:
         """The id of the record `ref` names: its full id, or a prefix of at least 8 characters that
         exactly one live record has, as bootstrap prints them. None when unknown or ambiguous."""

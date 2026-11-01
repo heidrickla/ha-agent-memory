@@ -36,10 +36,11 @@ import enrich
 import mcp
 import page
 import review
-from store import Store
+from store import TYPES, Store
 
 LOG = logging.getLogger("agent-memory")
 INGRESS_NETS = ("172.30.32.", "172.30.33.")  # Home Assistant's ingress proxy addresses
+INGRESS_PEER = "172.30.32.2"  # Supervisor ingress; a request header alone is not authentication.
 # REST reads and the tool whose scope each needs: the same rule as the MCP tool.
 REST_GET = {
     "/api/bootstrap": "memory_bootstrap",
@@ -223,6 +224,27 @@ class App:
         connect = {"url": mcp_url(host), "clients": self.client_rows()}
         return {"now": now, "health": self.health(), "counts": self.store.panel_counts(since), "audit": self.audit_tail(), "unused": self.store.unused(), "connect": connect}
 
+    def browser_data(self, query: dict[str, list[str]]) -> dict:
+        """Read-only, bounded record review for an authenticated Home Assistant ingress request."""
+        one = {key: values[0] for key, values in query.items() if values}
+        text = one.get("query", "")
+        namespace = one.get("namespace", "")
+        status = one.get("status", "")
+        kind = one.get("kind", "")
+        page_number = int(one.get("page", "1"))
+        result = self.store.browse(text, namespace, status, kind, page_number)
+        selected = next((record for record in result["records"] if record["id"] == one.get("id")), None)
+        return {
+            **result,
+            "query": text.strip(),
+            "namespace": namespace,
+            "status": status,
+            "kind": kind,
+            "selected": selected or next(iter(result["records"]), None),
+            "namespaces": self.store.namespaces(),
+            "types": TYPES,
+        }
+
 
 def make_handler(app: App):
     class Handler(BaseHTTPRequestHandler):
@@ -281,6 +303,9 @@ def make_handler(app: App):
         def _ingress(self) -> bool:
             return self.client_address[0].startswith(INGRESS_NETS) or self.headers.get("X-Ingress-Path") is not None
 
+        def _trusted_ingress(self) -> bool:
+            return self.client_address[0] == INGRESS_PEER and bool(self.headers.get("X-Ingress-Path"))
+
         # ---------------------------------------------------------------- routes
         def do_GET(self):
             app.requests += 1
@@ -293,7 +318,20 @@ def make_handler(app: App):
                 if not self._ingress():
                     self._send(404, b"not found\n", "text/plain; charset=utf-8")
                     return
-                self._send(200, page.render(app.panel_data(forwarded_host(self.headers.get("X-Forwarded-Host")))).encode(), "text/html; charset=utf-8")
+                query = parse_qs(urlsplit(self.path).query)
+                view = query.get("view", ["overview"])[0]
+                if view == "browse" and not self._trusted_ingress():
+                    self._send(404, b"not found\n", "text/plain; charset=utf-8")
+                    return
+                if view not in ("overview", "browse"):
+                    self._send(404, b"not found\n", "text/plain; charset=utf-8")
+                    return
+                try:
+                    browser = app.browser_data(query) if view == "browse" else None
+                except ValueError:
+                    self._send(400, b"invalid browser filter\n", "text/plain; charset=utf-8")
+                    return
+                self._send(200, page.render(app.panel_data(forwarded_host(self.headers.get("X-Forwarded-Host"))), browser).encode(), "text/html; charset=utf-8")
             elif path == "/mcp":
                 self._send(405, b"", extra={"Allow": "POST"})
             elif path.startswith("/api/"):

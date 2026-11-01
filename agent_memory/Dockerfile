@@ -12,6 +12,7 @@ RUN apk add --no-cache python3 ca-certificates \
 
 WORKDIR /opt/agent_memory
 COPY server.py store.py mcp.py filters.py namespaces.py page.py enrich.py embed.py review.py ./
+COPY page.css ./
 
 RUN python3 -m py_compile server.py store.py mcp.py filters.py namespaces.py page.py enrich.py embed.py review.py
 
