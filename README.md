@@ -2,7 +2,9 @@
 
 Home Assistant add-on: one shared, bounded memory for Claude Code, Codex and other MCP agents, so a session starts from what earlier sessions learned instead of re-reading the repository. Storage and retrieval run in the add-on on SQLite full-text search and never depend on a paid model or a model server; an encoder and a local model server, when configured, improve ranking and enrich session notes.
 
-## Screenshots
+## Previous panel screenshots
+
+These screenshots show the earlier layout. The redesigned panel is awaiting visual review before deployment.
 
 ![The Memory panel with its status tiles, the Connect an agent card and records by type](docs/images/panel.png)
 
@@ -64,7 +66,7 @@ All optional. The numeric and model options have built-in defaults.
 | Requests | a request with an `Origin` header gets 403; a POST must be `application/json` (415) with a `Content-Length` from 0 to 1 MiB (400, 413) |
 | Filtering | every persisted field and queued payload: credentials, key material, JWTs, URL passwords and the `do-not-store` marker are refused and audited by field and pattern name; every database write passes the same screen, and audit context carrying a secret is kept as `[screened:<pattern>]` |
 | Health | `GET /health` carries the add-on `version`; the MCP `serverInfo` and the HTTP server report the same version; the image's `HEALTHCHECK` reads `GET /healthz` |
-| Page | ingress only, dark, drawn as graphics: status tiles, records by type and status, namespaces, audit rows per hour, model servers and encoder, nightly review and anchor sweep, unused records, latest audit rows |
+| Page | Home Assistant ingress overview with dark and light modes, service health, navigable record and candidate counts, record composition, model status, maintenance, namespaces and audit detail; a read-only record browser supports search, status/type/namespace filters, paging, content and provenance. The browser requires the trusted Supervisor ingress proxy and has no token or write controls. |
 
 ## Tools
 

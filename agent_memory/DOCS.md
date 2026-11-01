@@ -5,7 +5,7 @@
 1. Start the add-on. On first start it generates a token for each of the two default clients, `claude-code` and `codex`, and shows each token once in the Log tab with the command that uses it.
 2. Claude Code: run the logged command, `claude mcp add --scope user --transport http agent-memory http://<home-assistant-host>:8765/mcp --header 'Authorization: Bearer <token>'`, with the address you reach Home Assistant at.
 3. Codex: set `AGENT_MEMORY_TOKEN` to the `codex` token, and in `~/.codex/config.toml` add `[mcp_servers.agent_memory]` with `url = "http://<home-assistant-host>:8765/mcp"` and `bearer_token_env_var = "AGENT_MEMORY_TOKEN"`.
-4. Open the Memory panel in the sidebar: the Connect an agent card lists the clients and repeats the commands without the token.
+4. Open the Memory panel in the sidebar. The overview shows health and record counts. Browse records to search and filter stored context, then select one to inspect its content, revision and provenance. This panel is read-only. The Connect an agent section lists clients and commands without a token.
 
 Another agent: add a client with its name and scopes on the Configuration tab and restart; its token appears in the log. A new token for an existing client: remove it, restart, add it back and restart. Nothing else needs to be typed: enrichment and embedding retrieval stay off until a model server URL is set. If port 8765 is mapped to another host port on the Network section, use that port in the URL.
 
