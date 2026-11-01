@@ -6,10 +6,21 @@ import datetime as dt
 import sys
 from pathlib import Path
 
+import pytest
+
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "agent_memory"))
 import page
 import server as srv
-from test_memory import NS, call, http, rec  # noqa: F401  (http is a fixture)
+from test_memory import NS, OPTIONS, call, rec
+
+
+@pytest.fixture
+def panel_http(tmp_path):
+    app = srv.App(OPTIONS, str(tmp_path))
+    server = srv.serve(app, 0, host="127.0.0.1")
+    yield f"http://127.0.0.1:{server.server_address[1]}", app
+    server.shutdown()
+
 
 NOW = dt.datetime(2026, 10, 2, 23, 30, tzinfo=dt.UTC)
 
@@ -134,8 +145,8 @@ def test_empty_store_draws_empty_states():
     assert ">-</text>" in out  # the search ring with nothing to count
 
 
-def test_counts_split_status_and_type_and_keep_to_the_window(http):  # noqa: F811
-    base, app = http
+def test_counts_split_status_and_type_and_keep_to_the_window(panel_http):
+    base, app = panel_http
     app.memory.store_record(rec(), "desk")
     app.store.store(rec(title="Candidate fact", content="Something a session found.", status="candidate", type="repository-fact"), "desk")
     app.store.db.execute("insert into audit(at, client, action) values (?,?,?)", ("2026-01-01T00:00:00+00:00", "old", "search"))
@@ -172,15 +183,15 @@ def test_the_unused_card_waits_for_its_window_then_lists_records():
     assert "Unused records" not in page.render(data()), "no card without the data"
 
 
-def test_the_panel_carries_the_unused_list(http):  # noqa: F811
-    base, app = http
+def test_the_panel_carries_the_unused_list(panel_http):
+    base, app = panel_http
     assert app.panel_data()["unused"]["complete"] is False
     s, html_page = call(base, "/", headers={"X-Ingress-Path": "/api/hassio_ingress/x"})
     assert s == 200 and "<span>Unused records</span>" in html_page
 
 
-def test_record_browser_is_read_only_filtered_and_escaped(http, monkeypatch):  # noqa: F811
-    base, app = http
+def test_record_browser_is_read_only_filtered_and_escaped(panel_http, monkeypatch):
+    base, app = panel_http
     active = app.store.store(rec(title="<b>Router</b> restarts", content="Check the gateway before restarting."), "desk")
     candidate = app.store.store(rec(title="Candidate gateway", content="A gateway observation.", status="candidate"), "desk")
     before = app.store.db.execute("select count(*) from audit").fetchone()[0]
@@ -198,8 +209,8 @@ def test_record_browser_is_read_only_filtered_and_escaped(http, monkeypatch):  #
     assert app.store.db.execute("select count(*) from usage").fetchone()[0] == 0
 
 
-def test_record_browser_rejects_invalid_filters_and_bounds(http, monkeypatch):  # noqa: F811
-    base, _ = http
+def test_record_browser_rejects_invalid_filters_and_bounds(panel_http, monkeypatch):
+    base, _ = panel_http
     monkeypatch.setattr(srv, "INGRESS_PEER", "127.0.0.1")
     headers = {"X-Ingress-Path": "/api/hassio_ingress/x"}
     for path in ("/?view=browse&status=deleted", "/?view=browse&page=0", "/?view=browse&page=wat", "/?view=browse&query=" + "x" * 121):
