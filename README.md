@@ -2,9 +2,19 @@
 
 Home Assistant add-on: one shared, bounded memory for Claude Code, Codex and other MCP agents, so a session starts from what earlier sessions learned instead of re-reading the repository. Storage and retrieval run in the add-on on SQLite full-text search and never depend on a paid model or a model server; an encoder and a local model server, when configured, improve ranking and enrich session notes.
 
+## Redesigned panel review
+
+Lewis approved this visual direction on 2026-11-01. The capture shows the implemented overview with invented records and service readings. It is a local review preview, not the live Home Assistant panel.
+
+![The redesigned Agent Memory overview with service health, key metrics, record composition and model status](docs/images/agent-memory-overview-review.png)
+
+The record browser provides search and filters, a readable result list, and provenance for the selected record. This review capture also uses invented data and has no write controls.
+
+![The redesigned read-only record browser with filters, sample records and selected-record provenance](docs/images/agent-memory-browser-review.png)
+
 ## Previous panel screenshots
 
-These screenshots show the earlier layout. The redesigned panel is awaiting visual review before deployment.
+These screenshots show the earlier live layout.
 
 ![The Memory panel with its status tiles, the Connect an agent card and records by type](docs/images/panel.png)
 
